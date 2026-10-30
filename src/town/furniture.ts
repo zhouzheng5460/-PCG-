@@ -42,10 +42,14 @@ function lampPitch(cls: string): number {
   return Math.max(20, Math.min(40, Math.round((h * 3.2) / 5) * 5));
 }
 
-/** 车行道够宽就上双头灯：光源在分隔带两侧各伸出一臂，单臂照不到 20 m 宽的路 */
-function useDoubleHead(carW: number): boolean {
-  return carW >= u(14);
-}
+/**
+ * 灯型：**只保留单头灯**。
+ *
+ * 用户核对意见（图 2）："不要这种双头灯了，只保留一个灯头的样式"。
+ * 原来双头灯是"横杆两头各一个灯头"（改过一次是同臂串两个），但一杆两灯
+ * 在俯视图里读起来就是"路灯顶上一横一竖两个白块"，反而不如单头干净，
+ * 而且两个灯头总有一个不在车道上方。统一成单头：杆 + 一条朝道路中线的臂 + 一个灯头。
+ */
 
 export interface FurnitureResult {
   props: PropFeature[];
@@ -177,23 +181,33 @@ export function streetFurniture(model: Model, net: RoadNet): FurnitureResult {
       }
     }
 
-    // 路灯：靠路缘，基本两侧交错（一侧的灯照对面车道）
+    // 路灯：立在**人行道靠路缘**那一侧，灯臂朝道路中线；道路两侧对称布置。
     //
-    // 灯位按 site-studio 的口径从**路缘**起算（不是从路中心、也不是从红线），
-    // 路缘后退 0.6 m —— 这样改路宽时灯跟着路缘走，不会站进车行道里。
-    const carW = e.carL + e.carR;
-    const dbl = useDoubleHead(carW);
+    // 三条口径（按用户核对意见改）：
+    //   · 灯位从**路缘**起算（不是路中心、也不是红线），路缘后退 0.6 m ——
+    //     改路宽时灯跟着路缘走，不会站进车行道里；
+    //   · **两侧对称**：同一个里程左右各一盏。早先两侧交错（lk % 2 分左右），
+    //     从空中看就是"这条街灯都在左边"，用户明确要求对称；
+    //   · 灯型统一为单头，灯臂朝道路中线。
     let lk = 0;
     for (let s = s0; s <= s1; s += lampGap, lk++) {
       if (lk % lampStep !== 0) continue;
-      const left = lk % 2 === 0;
-      const d = left ? kerbL : kerbR;
-      if (left ? e.swL <= 0.1 : e.swR <= 0.1) continue;
-      const p = at(s, d);
-      if (blocked(p) || onCarriageway(p)) continue;
-      // 灯臂朝路面：左臂指向 -n，右臂指向 +n
-      add(dbl ? 'lampDouble' : 'lamp', p, left ? Math.atan2(-ny, -nx) : Math.atan2(ny, nx), 1, 'lighting');
-      lamps++;
+      const sides: boolean[] = e.swL > 0.1 && e.swR > 0.1 ? [true, false] : e.swL > 0.1 ? [true] : e.swR > 0.1 ? [false] : [];
+      for (const left of sides) {
+        // 灯位：人行道靠路缘；该侧人行道太窄就退到绿化带靠**路**的一侧，
+        // 总之不能站进人行道中间、也不能站到绿化带深处（图里那种"灯立在树丛里"的读法）。
+        const walkW = left ? e.swL : e.swR;
+        const vg = left ? e.vgL : e.vgR;
+        const inset = left ? e.insetL : e.insetR;
+        const kerb = inset - vg - walkW;
+        const d = kerb + (walkW >= u(2.0) ? u(0.6) : Math.min(vg * 0.5, u(0.6)));
+        const dd = left ? d : -d;
+        const p = at(s, dd);
+        if (blocked(p) || onCarriageway(p)) continue;
+        // 灯臂朝道路中线：左臂指向 -n，右臂指向 +n
+        add('lamp', p, left ? Math.atan2(-ny, -nx) : Math.atan2(ny, nx), 1, 'lighting');
+        lamps++;
+      }
     }
 
     // 垃圾桶：人行道上，隔一段一个

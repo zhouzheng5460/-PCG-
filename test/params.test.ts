@@ -141,7 +141,16 @@ for (const mode of ['tensor', 'path'] as const) {
     const greenA = sc.surfaces
       .filter((s) => s.mat === 'grass' || s.mat === 'grassDark')
       .reduce((a, s) => a + Math.abs(area(s.ring)), 0);
-    return { solids: sc.solids.length, blocks: m.patches.filter((p) => p.withinCity).length, green: greenA / Math.max(blockA, 1) };
+    // 地面区块的内部划分：草地块 / 步道块都算"分过区的地面"
+    const greenPatch = sc.surfaces.filter((s) => s.name === 'green_patch').length;
+    const walk = sc.surfaces.filter((s) => s.name === 'pave_walk').length;
+    return {
+      solids: sc.solids.length,
+      blocks: m.patches.filter((p) => p.withinCity).length,
+      green: greenA / Math.max(blockA, 1),
+      greenPatch,
+      walk,
+    };
   };
 
   const fine = count(true, { parcelPitchM: 22 });
@@ -149,9 +158,15 @@ for (const mode of ['tensor', 'path'] as const) {
   ok(fine.solids > coarse.solids * 1.15, `parcel：地块越小楼越多（22 m ${fine.solids} 栋 vs 60 m ${coarse.solids} 栋）`);
 
   const off = count(true, { parcelize: false });
-  // 关掉切分不是"楼变少"，是**绿地没了**：旧管线一个街区一栋楼，
-  // 基底是 stonePave / paver 的整片硬质。所以断言盯绿地，不盯楼数。
-  ok(fine.green > off.green * 1.35, `parcel：关掉切分绿地骤减（开 ${fine.green.toFixed(2)} vs 关 ${off.green.toFixed(2)}）`);
+  // 关掉切分之后，商业 / 市政地块不再是"一整片硬质"了 —— 街区级规划里
+  // 同样跑一遍地面分区（planCommercial / planCivic 的 pavingPartition），
+  // 所以"有没有绿化"不再是"切不切分"的差别，两种模式应当同一量级。
+  ok(fine.green > 0.5, `parcel：切分时绿地占比 ${fine.green.toFixed(2)}`);
+  ok(off.green > 0.5, `parcel：不切分时绿地占比 ${off.green.toFixed(2)}`);
+  ok(fine.green > off.green * 0.75, `parcel：切分后绿地不低于不切分（开 ${fine.green.toFixed(2)} vs 关 ${off.green.toFixed(2)}）`);
+  // 地面区块是真的切分出来的：草地块与步道块都要有，不能只有一整片铺装
+  ok(fine.greenPatch > 40, `parcel：切分出 ${fine.greenPatch} 个草地块`);
+  ok(fine.walk > 5, `parcel：切分出 ${fine.walk} 块内部步道`);
   ok(fine.solids / fine.blocks >= 2, `parcel：每个街区平均 ${(fine.solids / fine.blocks).toFixed(1)} 栋楼（关 ${(off.solids / off.blocks).toFixed(1)} 栋）`);
   console.log(
     `  parcelize        22 m → 楼 ${fine.solids} / 草面×地块 ${fine.green.toFixed(2)}   关 → 楼 ${off.solids} / 草面×地块 ${off.green.toFixed(2)}（>1 是铺装层互相重叠，只看相对值）`

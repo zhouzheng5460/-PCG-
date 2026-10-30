@@ -564,7 +564,7 @@ function paramRow(group: 'block' | 'building', sp: ParamSpec): string {
       <input type="range" class="grow" id="rng-${id}" min="${sp.min}" max="${sp.max}" step="${sp.step}"
              value="${v}" data-pgroup="${group}" data-pkey="${sp.key}"/>
       <span class="val" id="val-${id}">${v}${sp.unit ?? ''}</span>
-    </div>`;
+    </div>${sp.hint ? `<div class="tip" style="margin:-2px 0 6px 0">${sp.hint}</div>` : ''}`;
 }
 
 /**
@@ -841,7 +841,16 @@ function buildRight(): void {
     `
     <div class="row"><label class="check"><input type="checkbox" id="chk-parcel" ${state.params.block.parcelize ? 'checked' : ''}/>街区切成小地块</label></div>
     ${specRows('parcel')}
-    <div class="tip" style="margin-top:6px">「街区切成小地块」是主开关：每个街区按「小地块边长」再分割，每块单独排一栋楼，基底铺草、分割线铺窄巷 —— 一个街区 3~5 栋楼。关掉就整块地排一栋大楼。</div>
+    <div class="tip" style="margin-top:6px">
+      <b>开</b>：每个街区按「<b>小地块边长</b>」再分割（目标面积 = 边长²）→
+      每块单独排楼，<b>住宅块内部还会再排成 2~3 栋平行板楼</b>（楼间距见「建筑形态」）→
+      分割线是<b>沥青内路 + 中心虚线</b> → 街区内部有真路 →
+      基底：住宅 / 绿地铺草，商业 / 市政 / 工业铺装。一个街区通常 <b>3~8 栋楼</b>。
+      <br/><b>关</b>：整块地按用途排<b>一组体量</b>（塔楼 + 裙房，或一栋大楼），
+      绿地只剩沿路一条收边，楼数掉到 1/3 左右。
+      <br/><b>三个尺寸参数各管一件事</b>：小地块边长 = 切几块；街区尺度系数 = 街区多大；
+      开发单元边长 / 地块目标面积只在关掉切分、或禁建区与手动指定地块时生效。
+    </div>
     `
   );
 

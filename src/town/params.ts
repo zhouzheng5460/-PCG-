@@ -131,6 +131,19 @@ export interface BuildingParams {
   mergeChance: number;
   /** "中心区"的判定半径（占城市半径的比例） */
   tightRadius: number;
+  /**
+   * 楼栋之间的净距，米（参考图里住宅楼间距 12~18 m）。
+   *
+   * 这是"一个地块里排几栋平行板楼"这条新规则的间距旋钮：
+   * 间距越大，院子越宽、楼越少；间距 0 会让几栋楼贴成一整片墙。
+   */
+  spacingM: number;
+  /**
+   * 一个地块最多排几栋楼。
+   *
+   * 1 = 回到旧口径（一个地块一栋楼）；2~4 才是参考图里的"多栋平行板楼 + 内院"。
+   */
+  maxPerParcel: number;
 }
 
 /** 绿地 / 树木 */
@@ -164,7 +177,7 @@ export function defaultParams(): TownParams {
       // 每块 37×37 m（≈1370 m²），放一栋 20×16 m 的楼 + 一圈院子，
       // 覆盖率 55% —— 对应参考城市"楼占一半、另一半是草坪"的比例。
       parcelize: true,
-      parcelPitchM: 32,
+      parcelPitchM: 46,
       seamWideM: 5,
       seamNarrowM: 3.5,
       internalRoadW: 7,
@@ -209,6 +222,10 @@ export function defaultParams(): TownParams {
       slabHMax: 4.8,
       mergeChance: 0.22,
       tightRadius: 0.45,
+      // 楼间距 14 m、每地块最多 3 栋 —— 参考图（住宅）里是"多栋平行板楼 + 内院"，
+      // 2 栋是下限，3 栋以上要地块短边够大才排得下。
+      spacingM: 12,
+      maxPerParcel: 3,
     },
     green: {
       // 林地密度按"看得见树"给的：34 棵/1000 m² 在 150 m 见方的林地上会连成一整片绿，
@@ -247,6 +264,10 @@ const LIMITS: Record<string, [number, number]> = {
   // 下限 0.7：再密就回到"路比楼多"。上限 2.5：再疏街区就大过 250 m，
   // 一条环路兜不住，得再套一层，那属于另一套模型了。
   'block.spacingK': [0.7, 2.5],
+  // 楼间距下限 6 m：再窄两栋楼就贴成一片墙，剖面读不出"两栋"；
+  // 上限 30 m：再宽一个院子就够再塞一栋了。
+  'building.spacingM': [6, 30],
+  'building.maxPerParcel': [1, 4],
   'block.loopW': [3.5, 9],
   // 下限 3：绿带窄于 3 m 时，环路和城市路的人行道只隔一条硬质带，
   // 空中看就是一条 15 m 宽的宽路 —— 那正是环路要解决的问题，所以不给 0。
@@ -342,21 +363,60 @@ export interface ParamSpec {
   min: number;
   max: number;
   topic: ParamTopic;
+  /**
+   * 这个参数**什么时候才生效**。
+   *
+   * 面板上「地块切分」里摆着四个看起来都相关的旋钮，但它们的生效范围完全
+   * 不同（cellM 只在老管线里用、parcelTargetA 只在禁建区 / 手动指定时用）。
+   * 不写清楚，用户调完发现城市没反应 —— 或者反应和预期差很远。
+   */
+  hint?: string;
 }
 
 export const BLOCK_SPECS: ParamSpec[] = [
-  { key: 'cellM', label: '开发单元边长', unit: 'm', step: 1, ...lim('block.cellM'), topic: 'parcel' },
+  {
+    key: 'cellM',
+    label: '开发单元边长',
+    unit: 'm',
+    step: 1,
+    ...lim('block.cellM'),
+    topic: 'parcel',
+    hint: '只在「街区切成小地块」**关闭**时生效（老管线的一格 = 一栋楼）',
+  },
   { key: 'gapM', label: '楼间缝宽', unit: 'm', step: 0.1, ...lim('block.gapM'), topic: 'building' },
   { key: 'setbackK', label: '建筑退线系数', step: 0.002, ...lim('block.setbackK'), topic: 'building' },
-  { key: 'parcelTargetA', label: '地块目标面积', unit: '单位²', step: 4, ...lim('block.parcelTargetA'), topic: 'parcel' },
-  { key: 'parcelPitchM', label: '小地块边长', unit: 'm', step: 1, ...lim('block.parcelPitchM'), topic: 'parcel' },
+  {
+    key: 'parcelTargetA',
+    label: '地块目标面积',
+    unit: '单位²',
+    step: 4,
+    ...lim('block.parcelTargetA'),
+    topic: 'parcel',
+    hint: '只在**禁建区**与「选中地块 → 切分」里生效；普通街区按「小地块边长」算',
+  },
+  {
+    key: 'parcelPitchM',
+    label: '小地块边长',
+    unit: 'm',
+    step: 1,
+    ...lim('block.parcelPitchM'),
+    topic: 'parcel',
+    hint: '开启切分时**唯一**决定切几块的参数：目标面积 = 边长²',
+  },
   { key: 'seamWideM', label: '一级巷道宽', unit: 'm', step: 0.5, ...lim('block.seamWideM'), topic: 'road' },
   { key: 'seamNarrowM', label: '二级巷道宽', unit: 'm', step: 0.5, ...lim('block.seamNarrowM'), topic: 'road' },
   { key: 'internalRoadW', label: '内部路车行道', unit: 'm', step: 0.5, ...lim('block.internalRoadW'), topic: 'road' },
   { key: 'pathCellM', label: '寻路栅格边长', unit: 'm', step: 1, ...lim('block.pathCellM'), topic: 'road' },
   { key: 'pathTurn', label: '寻路转弯惩罚', step: 0.2, ...lim('block.pathTurn'), topic: 'road' },
   { key: 'pathJitter', label: '寻路代价扰动', step: 0.02, ...lim('block.pathJitter'), topic: 'road' },
-  { key: 'spacingK', label: '街区尺度系数', step: 0.05, ...lim('block.spacingK'), topic: 'parcel' },
+  {
+    key: 'spacingK',
+    label: '街区尺度系数',
+    step: 0.05,
+    ...lim('block.spacingK'),
+    topic: 'parcel',
+    hint: '决定**街区有多大**（进而决定街区里装几个小地块）',
+  },
   { key: 'loopMinM', label: '环路触发跨度', unit: 'm', step: 5, ...lim('block.loopMinM'), topic: 'loop' },
   { key: 'loopW', label: '环路车行道', unit: 'm', step: 0.5, ...lim('block.loopW'), topic: 'loop' },
   { key: 'loopVergeM', label: '环路外侧绿带', unit: 'm', step: 0.5, ...lim('block.loopVergeM'), topic: 'loop' },
@@ -369,6 +429,8 @@ export const BUILDING_SPECS: ParamSpec[] = [
   { key: 'mergeChance', label: '合并成板楼', step: 0.02, ...lim('building.mergeChance'), topic: 'building' },
   { key: 'slabHMax', label: '板楼最高', unit: '单位', step: 0.2, ...lim('building.slabHMax'), topic: 'building' },
   { key: 'towerHMaxCore', label: '塔楼最高（中心）', unit: '单位', step: 0.5, ...lim('building.towerHMaxCore'), topic: 'building' },
+  { key: 'spacingM', label: '楼栋间距', unit: 'm', step: 1, ...lim('building.spacingM'), topic: 'building' },
+  { key: 'maxPerParcel', label: '每地块楼栋上限', unit: '栋', step: 1, ...lim('building.maxPerParcel'), topic: 'building' },
 ];
 
 /** 一个参数属于哪个参数对象（block / building），UI 提交时要用它定位 */

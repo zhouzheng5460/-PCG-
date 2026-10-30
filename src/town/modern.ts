@@ -27,6 +27,7 @@ import { clamp, ringCenter, toCCW, DROPPED_PROPS } from '../scene/types';
 import type { MatKey } from '../scene/palette';
 import { u } from '../road/spec';
 import { RAIL_PARK, addHedgeRun, addRail } from './rails';
+import type { RailSpec } from './rails';
 import { fbm } from '../core/noise';
 import { type Family, type FieldSource, TensorField } from './field/tensor';
 import { buildLattice, connectEntries, pickEntryPoints } from './field/lattice';
@@ -218,7 +219,7 @@ function clipRing(c: Ctx, ring: Pt[]): Pt[] | null {
 function addSolid(c: Ctx, name: string, ring: Pt[], h: number, wall: MatKey, roof: MatKey, kind: SolidKind, y0 = 0.05) {
   if (ring.length < 3 || h <= 0.02) return;
   if (area(ring) < 1e-4) return;
-  const g = gateSolid(ring, h, kind);
+  const g = gateSolid(ring, h, kind, Array.from(c.block));
   c.res.solids.push({
     name,
     group: groupOf(c.use),
@@ -526,7 +527,7 @@ function baseSurface(c: Ctx, mat: MatKey) {
 
 function planCbd(c: Ctx) {
   // 商务地块：硬质为主（前场 + 大堂落客），内部切出 16% 的绿化
-  pavingPartition(c, 0.16, 'stonePave');
+  pavingPartition(c, 0.15, 'stonePave');
   const { bb, f } = c;
   const midU = (bb.u0 + bb.u1) / 2;
   const midV = (bb.v0 + bb.v1) / 2;
@@ -592,7 +593,7 @@ function planCbd(c: Ctx) {
 
 function planCommercial(c: Ctx) {
   // 沿街商业：临街一条硬质前场，内部 22% 草地 —— 不再整块灰板
-  pavingPartition(c, 0.22, 'paver');
+  pavingPartition(c, 0.2, 'paver');
   const { bb, f } = c;
   const long = Math.max(bb.w, bb.h);
   const alongU = bb.w >= bb.h;
@@ -696,11 +697,29 @@ function pavingPartition(c: Ctx, greenRatio: number, hard: MatKey = 'paver'): vo
   const cu = cutsOf(splitU);
   const cv = cutsOf(splitV);
 
+  /**
+   * 地块内部的地面区块类型。
+   *
+   * `hard`  —— 临街硬质前场（贴红线的一圈）
+   * `walk`  —— 内部步道：沿地块长向的一条脊，材质比前场浅一档，
+   *            俯视图里是一条穿过去的浅色带，把绿地分成两半
+   * `lawn`  —— 草坪
+   * `bed`   —— 种植池（深色地被 + 一圈低矮绿篱围边）
+   * `grove` —— 树阵绿地（成行的树）
+   *
+   * 五种都是**同一层地面区块**，互不重叠 —— 草地不是贴在铺装上的一层皮，
+   * 而是把地块真的切开之后的某几块。
+   */
+  type CellKind = 'hard' | 'walk' | 'lawn' | 'bed' | 'grove';
+
   interface Cell {
     ring: Pt[];
     a: number;
     edge: number;
     underBuilding: boolean;
+    gi: number;
+    gj: number;
+    kind: CellKind;
   }
   const cells: Cell[] = [];
 
@@ -724,6 +743,9 @@ function pavingPartition(c: Ctx, greenRatio: number, hard: MatKey = 'paver'): vo
           a,
           edge: distToRing(ctr, blockRing),
           underBuilding: c.footprints.some((fp) => pointInPolygon(ctr, fp)),
+          gi: i,
+          gj: j,
+          kind: 'hard',
         });
       }
     }
@@ -733,7 +755,8 @@ function pavingPartition(c: Ctx, greenRatio: number, hard: MatKey = 'paver'): vo
     return;
   }
 
-  // 分材质：靠内的先拿草地，贴边的一律硬质（临街前场）。
+  // 分类：贴边的一律硬质前场，靠里的按"离边界远近"抢绿化预算，
+  // 中间那行 / 那列留成内部步道。
   //
   // 三条经验，都是被实测逼出来的：
   //   · `inner` 不能大 —— 商业地块的绿化本来就在临街退界和转角树池里，
@@ -745,15 +768,39 @@ function pavingPartition(c: Ctx, greenRatio: number, hard: MatKey = 'paver'): vo
   //     按 1.6 倍卡会把整块地判成硬质。
   const total = cells.reduce((s, x) => s + x.a, 0);
   const wantGreen = total * greenRatio;
-  const green = new Set<Cell>();
   let gotGreen = 0;
   const inner = Math.max(u(1.2), short * 0.06);
   const rank = (cell: Cell) => (cell.underBuilding ? cell.edge - 100 : cell.edge);
-  for (const cell of cells.slice().sort((p, q) => rank(q) - rank(p))) {
-    if (cell.edge < inner) continue;
+
+  // ① 步道脊：沿地块长向的中间一列（市政地块再交叉一列）。
+  //    它把绿地从中间切开，是"商业街内部有步道"的读感来源。
+  const midU = Math.floor(splitU / 2);
+  const midV = Math.floor(splitV / 2);
+  const crossSpine = c.use === 'civic';
+  for (const cell of cells) {
+    if (cell.edge < inner) continue; // 贴边 = 前场
+    const onSpine = alongU ? cell.gi === midU : cell.gj === midV;
+    const onCross = crossSpine && (alongU ? cell.gj === midV : cell.gi === midU);
+    if (onSpine || onCross) cell.kind = 'walk';
+  }
+
+  // ② 绿化预算：剩下的块按"越靠里越先绿化"分配
+  for (const cell of cells
+    .filter((x) => x.kind === 'hard' && x.edge >= inner)
+    .sort((p, q) => rank(q) - rank(p))) {
     if (cell.a > wantGreen * 2.2) continue;
     if (gotGreen + cell.a > wantGreen * 1.45) continue;
-    green.add(cell);
+    cell.kind = pickGreenKind(c.use, cell.a * 49);
+    gotGreen += cell.a;
+  }
+  // ③ 预算没填满（块太大 / 步道占了太多）时，从步道里借一块最靠内的
+  for (const cell of cells
+    .filter((x) => x.kind === 'walk')
+    .sort((p, q) => rank(q) - rank(p))) {
+    if (gotGreen >= wantGreen) break;
+    if (cell.a > wantGreen * 2.2) continue;
+    if (gotGreen + cell.a > wantGreen * 1.45) continue;
+    cell.kind = pickGreenKind(c.use, cell.a * 49);
     gotGreen += cell.a;
   }
   const tal = (PAVE_TALLY[c.use] ??= { n: 0, total: 0, green: 0, want: 0 });
@@ -763,52 +810,117 @@ function pavingPartition(c: Ctx, greenRatio: number, hard: MatKey = 'paver'): vo
   tal.want += wantGreen;
   // 兜底：一块绿地都没有时，把最靠内的那块改掉（哪怕是楼底下 —— 那也算
   // 这块地有绿化，总比整块灰板强）
-  if (green.size === 0) {
+  if (gotGreen === 0) {
     const cand = cells.slice().sort((p, q) => rank(q) - rank(p))[0];
-    if (cand) green.add(cand);
+    if (cand) {
+      cand.kind = 'lawn';
+      gotGreen += cand.a;
+    }
   }
-  // 也兜底一下另一头：全变草地时留一块硬质（出入口得站得住）
-  if (green.size === cells.length) green.delete(cells.slice().sort((p, q) => p.edge - q.edge)[0]);
 
+  // 铺地：五种区块各铺各的，互不重叠。
+  const walkMat = WALK_MAT[c.use] ?? 'stonePave';
   for (const cell of cells) {
-    if (green.has(cell)) {
+    if (cell.kind === 'lawn' || cell.kind === 'grove' || cell.kind === 'bed') {
       // 草地比硬质面高一点点：不重叠时无所谓，但真撞上了让草赢 ——
       // 一块被铺装盖住的草地会把绿地率算没（cover 按 y 排序刷格）。
       // 0.0090 压在散水（0.0085）之上、路缘带（0.0092）与临街前场（0.0094）之下：
       // 楼贴着草是正常的，人行道压着草就不正常了。
-      addSurface(c, 'green_patch', cell.ring, Rng.bool(0.3) ? 'grassDark' : 'grass', 0.009, false);
+      const mat = cell.kind === 'bed' ? 'grassDark' : Rng.bool(0.28) ? 'grassDark' : 'grass';
+      addSurface(c, 'green_patch', cell.ring, mat, 0.009, false);
       c.green.push(cell.ring);
+    } else if (cell.kind === 'walk') {
+      addSurface(c, 'pave_walk', cell.ring, walkMat, 0.0062, false);
     } else {
       addSurface(c, 'pave', cell.ring, hard, 0.006, false);
     }
   }
 
-  // 草地里的内容：一棵树 + 靠内那一侧两段低矮绿篱。
-  // 只有草没有植物，从空中看还是一块绿纸片。
-  // 面积阈值按 m² 给、再换算成单位²（1 单位² = 49 m²），不能直接拿 u() 比 ——
-  // u() 是长度换算，拿来比面积会差 7 倍。
-  for (const cell of green) {
-    const ctr = ringCenter(cell.ring);
-    if (cell.a > 50 / 49) addProp(c, 'tree', ctr, 0.95 + Rng.float() * 0.3, Rng.float() * Math.PI * 2);
-    if (cell.a > 120 / 49) {
-      const edge = longestEdge(cell.ring);
-      if (edge) {
-        const [a, b] = edge;
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const L = Math.hypot(dx, dy);
-        if (L > u(3)) {
-          const t0 = 0.2;
-          const t1 = 0.8;
-          addHedgeRun({
-            pts: [new Pt(a.x + dx * t0, a.y + dy * t0), new Pt(a.x + dx * t1, a.y + dy * t1)],
-            namePrefix: 'pave_hedge',
-            group: groupOf(c.use),
-            props: c.res.props,
-          });
-        }
+  // 绿地里的植物：草要有树、种植池要有绿篱、树阵要成行
+  for (const cell of cells) {
+    if (cell.kind === 'lawn' || cell.kind === 'grove' || cell.kind === 'bed') {
+      greenCellContent(c, cell.ring, cell.kind, cell.a);
+    }
+  }
+}
+
+/**
+ * 绿地块的植物配置。
+ *
+ * 只有草没有植物，从空中看还是一块绿纸片 —— 商业街和市政广场的绿化
+ * 之所以读得出来，靠的是**树和绿篱的排布**，不是草坪的颜色。
+ */
+function greenCellContent(c: Ctx, ring: Pt[], kind: 'lawn' | 'grove' | 'bed', a: number): void {
+  const g = toCCW(ring);
+  const aM2 = a * 49;
+  const ctr = ringCenter(g);
+  if (kind === 'grove') {
+    // 树阵：行列树，最小间距 0.55 单位（≈3.9 m），最多 4×4
+    const gb = bboxOf(g, c.f);
+    const cols = clamp(Math.round(gb.w / 0.62), 2, 4);
+    const rows = clamp(Math.round(gb.h / 0.62), 2, 4);
+    const du = gb.w / cols;
+    const dv = gb.h / rows;
+    for (let i = 0; i < cols; i++) {
+      for (let j = 0; j < rows; j++) {
+        const p = world(c.f, gb.u0 + du * (i + 0.5), gb.v0 + dv * (j + 0.5));
+        if (!pointInPolygon(p, g)) continue;
+        if (distToRing(p, g) < 0.1) continue;
+        addProp(c, 'tree', p, 0.74 + Rng.float() * 0.2, Rng.float() * Math.PI * 2);
       }
     }
+    return;
+  }
+  if (kind === 'bed') {
+    // 种植池：沿块边内缩一圈低矮绿篱，中间一两棵小乔木
+    const inner = offsetRing(g, 0.08);
+    if (inner.length >= 3) {
+      addHedgeRun({
+        pts: [...inner, inner[0]],
+        namePrefix: 'bed_hedge',
+        group: groupOf(c.use),
+        props: c.res.props,
+      });
+    }
+    if (aM2 > 90) addProp(c, 'treeSmall', ctr, 0.8 + Rng.float() * 0.2, Rng.float() * Math.PI * 2);
+    return;
+  }
+  // 草坪：一到两棵树
+  if (aM2 > 55) {
+    addProp(c, 'tree', ctr, 0.9 + Rng.float() * 0.3, Rng.float() * Math.PI * 2);
+    if (aM2 > 190) {
+      const gb = bboxOf(g, c.f);
+      const p = world(c.f, gb.u0 + gb.w * 0.28, gb.v0 + gb.h * 0.72);
+      if (pointInPolygon(p, g)) addProp(c, 'treeSmall', p, 0.85, Rng.float() * Math.PI * 2);
+    }
+  }
+}
+
+/** 内部步道的材质：比前场浅一档，俯视图里能看出"这是一条路" */
+const WALK_MAT: Partial<Record<LandUse, MatKey>> = {
+  cbd: 'concrete',
+  commercial: 'stonePave',
+  civic: 'stonePave',
+  industrial: 'concrete',
+};
+
+/**
+ * 绿化块的类型：草坪 / 种植池 / 树阵。
+ *
+ * 比例按用途给 —— 商务地块多树阵（硬底上点几棵树），商业地块多种植池，
+ * 市政地块草坪为主（广场绿地），工业地块基本只有草坪。
+ */
+function pickGreenKind(use: LandUse, aM2: number): 'lawn' | 'bed' | 'grove' {
+  if (aM2 < 90) return Rng.bool(0.3) ? 'bed' : 'lawn';
+  switch (use) {
+    case 'cbd':
+      return Rng.bool(0.45) ? 'grove' : Rng.bool(0.3) ? 'bed' : 'lawn';
+    case 'commercial':
+      return Rng.bool(0.32) ? 'bed' : Rng.bool(0.4) ? 'grove' : 'lawn';
+    case 'civic':
+      return Rng.bool(0.3) ? 'grove' : Rng.bool(0.25) ? 'bed' : 'lawn';
+    default:
+      return Rng.bool(0.18) ? 'bed' : 'lawn';
   }
 }
 
@@ -954,7 +1066,7 @@ function planResidential(c: Ctx) {
 function planIndustrial(c: Ctx) {
   // 工业：堆场必须是硬质（重车碾压），但仍切出 15% 的绿化隔离带 ——
   // 原先是整片砾石，空中看就是一块土黄色的板
-  pavingPartition(c, 0.15, 'gravel');
+  pavingPartition(c, 0.13, 'gravel');
   const { bb, f } = c;
   const alongU = bb.w >= bb.h;
 
@@ -1037,7 +1149,7 @@ function planIndustrial(c: Ctx) {
     : [bb.u0 + bb.w * 0.66, bb.v0 + bb.h * 0.08, bb.u1 - bb.w * 0.06, bb.v1 - bb.h * 0.34];
   parkingBlock(c, truckBox, alongU, 'truck', TRUCK_STALL);
 
-  boundaryRail(c, 3);
+  boundaryFence(c);
   scatter(c, 3, { avoid: c.footprints, minDist: 0.8, kind: 'tree' });
 }
 
@@ -1082,7 +1194,7 @@ function planCivic(c: Ctx) {
   }
   const bin = sampleIn(c, c.footprints, 0.3);
   if (bin) addProp(c, 'bin', bin, 1, 0, 'furniture');
-  boundaryHedge(c, 2);
+  boundaryFence(c);
 }
 
 function planPark(c: Ctx) {
@@ -1176,6 +1288,8 @@ function planParkingUse(c: Ctx) {
       carry = t - len;
     }
   }
+  // 专用车场：围栏沿**地块边缘**封一圈（parkingFence），灯柱在停车坪里。
+  // 地块里那块沥青坪不再单独围 —— 两圈栏杆叠在一起只会更乱。
   parkingFence(c);
 }
 
@@ -1186,22 +1300,59 @@ function planParkingUse(c: Ctx) {
 const PARK_OPEN_M = 5.4;
 
 /**
- * 停车场围栏：沿地块边界**围一圈**，只在最长的一条边上留一个车道开口。
+ * 把一段直线里压到建筑的部分裁掉，返回剩下的那一段（最多两段，取较长的一段）。
  *
- * 参考图（停车场鸟瞰）里能看清楚三件事，原来一件都没做到：
- *   ① 围栏是**闭环**的 —— 原来直接把"最长边"整条跳过，等于四面墙缺一整面，
- *      从那条边看过去停车场是敞开的，围合感全无；
- *   ② 开口只有一个、宽度就是一条车道（约 5 m）—— 不是缺一整边；
- *   ③ 围栏是"两根横杆 + 立柱"的通透栏杆，不是一堵 1.6 m 高的实心矮墙。
- * 第 ③ 条靠 `rails.ts` 的 addRail 落地（横杆是悬空细 path、立柱是 post 道具）。
+ * 停车坪围栏用：贴着楼的那一小段不能不要（要不然这条边就完全没有栏杆），
+ * 也不能整段保留（栏杆横穿楼体）。所以先裁，裁完还剩一截才用。
+ */
+function trimByFootprint(seg: Pt[], fps: Pt[][]): Pt[] | null {
+  const a = seg[0];
+  const b = seg[1];
+  const L = Pt.distance(a, b);
+  if (L < 1e-6) return null;
+  const ux = (b.x - a.x) / L;
+  const uy = (b.y - a.y) / L;
+  const steps = 24;
+  let runStart = -1;
+  let best: [number, number] | null = null;
+  for (let i = 0; i <= steps; i++) {
+    const t = (i / steps) * L;
+    const p = new Pt(a.x + ux * t, a.y + uy * t);
+    const inside = fps.some((fp) => pointInPolygon(p, fp));
+    if (!inside && runStart < 0) runStart = t;
+    if (inside && runStart >= 0) {
+      if (!best || t - runStart > best[1] - best[0]) best = [runStart, t];
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0 && (!best || L - runStart > best[1] - best[0])) best = [runStart, L];
+  if (!best) return null;
+  const len = best[1] - best[0];
+  if (len < 0.5) return null;
+  return [
+    new Pt(a.x + ux * best[0], a.y + uy * best[0]),
+    new Pt(a.x + ux * best[1], a.y + uy * best[1]),
+  ];
+}
+
+/**
+ * 专用停车用地的围栏：沿**地块边界**封一圈，只在临街那条边留一个车道开口。
+ *
+ * 用户核对意见（图 3）："停车场围栏有的有有的没有，我希望全都有，
+ * 并给停车场地块封一个边用来放栏杆"。
+ * 所以专用车场不再只围那块沥青坪，而是**沿地块边缘整齐排一圈栏杆** ——
+ * 围住的是整个车场（含边缘绿化带），读起来才像"一个被圈起来的停车场"。
  */
 function parkingFence(c: Ctx) {
   const ring = Array.from(c.block);
   if (ring.length < 3) return;
+  const openLen = u(PARK_OPEN_M);
+  const paths: PathFeature[] = [];
+  const props: PropFeature[] = [];
 
-  // 开口开在最长边上：那条边通常就是临街面，车辆从街上直接拐进来最自然
+  // 开口开在最长边（通常就是临街面）的中段
+  let li = 0;
   let longest = -1;
-  let li = -1;
   for (let i = 0; i < ring.length; i++) {
     const L = Pt.distance(ring[i], ring[(i + 1) % ring.length]);
     if (L > longest) {
@@ -1210,31 +1361,27 @@ function parkingFence(c: Ctx) {
     }
   }
 
-  const openLen = u(PARK_OPEN_M);
-  const paths: PathFeature[] = [];
-  const props: PropFeature[] = [];
   let k = 0;
-
   for (let i = 0; i < ring.length; i++) {
     const a = ring[i];
     const b = ring[(i + 1) % ring.length];
     const L = Pt.distance(a, b);
     if (L < 0.4) continue;
+    const at = (t: number) => new Pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
 
     let segs: Pt[][] = [[a, b]];
-    if (i === li && L > openLen * 2.4) {
-      // 中间挖一个开口：两段各留出 30% 以上，太短的一段干脆不生成
-      const at = (t: number) => new Pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    if (i === li && L > openLen * 2.2) {
       const half = openLen / 2 / L;
-      const t0 = Math.max(0.12, 0.5 - half);
-      const t1 = Math.min(0.88, 0.5 + half);
+      const t0 = Math.max(0.1, 0.5 - half);
+      const t1 = Math.min(0.9, 0.5 + half);
       segs = [
         [a, at(t0)],
         [at(t1), b],
-      ].filter((s) => Pt.distance(s[0], s[1]) > 0.3);
+      ].filter((q) => Pt.distance(q[0], q[1]) > 0.25);
     }
-
     for (const seg of segs) {
+      const mid = new Pt((seg[0].x + seg[1].x) / 2, (seg[0].y + seg[1].y) / 2);
+      if (c.footprints.some((fp) => pointInPolygon(mid, fp))) continue;
       addRail({
         pts: seg,
         namePrefix: `parkfence_${i}_${k++}`,
@@ -1248,9 +1395,18 @@ function parkingFence(c: Ctx) {
   }
   c.res.paths.push(...paths);
   c.res.props.push(...props);
+}
 
-  // 场内灯柱：参考图里车位之间立着两根细杆灯。
-  // 沿长轴均布 2~4 根，落在车位带之间的通道上（不占车位）。
+/**
+ * 停车场围栏 + 场内灯柱。
+ *
+ * 围栏本体在 `parkingLotFence`（每块停车坪自己围一圈 + 一个车道开口）；
+ * 这里只管**场内灯柱**：参考图里车位之间立着两三根细杆灯，沿长轴均布，
+ * 落在车位带之间的通道上（不占车位）。
+ */
+function parkingLamps(c: Ctx, ring: Pt[]) {
+  if (ring.length < 3) return;
+  const props: PropFeature[] = [];
   const bbRing = ring;
   let x0 = Infinity;
   let y0 = Infinity;
@@ -1273,6 +1429,7 @@ function parkingFence(c: Ctx) {
     if (!pointInPolygon(at, ring)) continue;
     addProp(c, 'lamp', at, 0.42, along ? 0 : Math.PI / 2, 'lighting');
   }
+  c.res.props.push(...props);
 }
 
 /**
@@ -1639,14 +1796,37 @@ function planParcels(c: Ctx, targetA: number, depthMax = 2): boolean {
   };
   baseSurface(c, BASE_OF_USE[c.use] ?? 'grass');
 
-  // 巷道：混凝土、比车道宽窄一档。高度必须压在基底（0.006）之上、
-  // 建筑散水（0.0085）之下 —— 巷子从散水底下穿过去才对，
-  // 压在散水上面会把楼的落地感削掉。
+  // 街区内部的路：二级分割线铺**沥青车行道 + 中心虚线**，
+  // 一级分割线（贯通子街坊的那条）铺宽一档的沥青并带标线。
+  //
+  // 用户核对意见（图 3）："区块内没有道路类型的地面铺装" ——
+  // 原来二级分割线全是混凝土窄巷，从空中读就是一条浅灰缝，
+  // 整个街区里没有一处"这是路"的读感。现在把它做成真路：
+  // 沥青面 + 白色虚线，路的两侧自然就成了人行与绿地。
+  //
+  // 高度仍然压在建筑散水（0.0085）之下 —— 巷子从散水底下穿过去才对。
   const P = c.model.params.block;
   if (part.seams.length > 0) {
     drawSeams(
       c,
-      part.seams.map((s) => ({ pts: s.pts, w: u(P.seamNarrowM), mat: 'concrete' as MatKey, y: 0.0072 }))
+      part.seams.map((s) => {
+        // 内部路分两级（用户建议）：
+        //   · **内部主路**（depth 0）：把街区切成两半的那一刀，本来就贯通
+        //     整个街区 → 宽一档（5 m），带中心虚线，是街区内部的主干；
+        //   · **内部二级路**（depth ≥ 1）：子街坊内部的地块分隔缝 →
+        //     窄一档（3.5 m），不延伸到街区边界，只在子街坊里走。
+        //
+        // 之前把一级缝"延长"到街区边界，结果延长出来的那截直接穿过楼 ——
+        // 内部路必须跟着建筑切分走，不能自己找路。
+        const top = s.depth === 0;
+        return {
+          pts: s.pts,
+          w: u(top ? P.seamWideM : P.seamNarrowM),
+          mat: 'asphalt' as MatKey,
+          y: 0.0126,
+          mark: top,
+        };
+      })
     );
   }
 
@@ -1973,11 +2153,120 @@ function pickLow(fp: Pt[], A: number): Brick | null {
  *
  * 雨棚（canopy）不走这个闸：它本来就是薄片，薄是对的。
  */
-function gateSolid(ring: Pt[], h: number, kind: SolidKind): { ring: Pt[]; h: number; kind: SolidKind } {
+/**
+ * 轮廓的最小外接矩形（主轴取最长边方向）。
+ *
+ * 用来把斜边楼"扶正"：张量切出来的地块是任意四边形，楼体内缩之后带着斜边，
+ * 倒角只会把锐角变成 45° 斜边 —— 用户核对时指出的就是这个：
+ * "锐角问题还是在开启切分后出现"（楼顶是个切掉一角的五边形）。
+ * 真正干净的做法是让楼**本来就是矩形**：沿主轴取外接矩形，斜角自然消失。
+ */
+function minAreaRect(ring: Pt[]): Pt[] | null {
+  if (ring.length < 3) return null;
+  let bi = 0;
+  let bl = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const L = Pt.distance(ring[i], ring[(i + 1) % ring.length]);
+    if (L > bl) {
+      bl = L;
+      bi = i;
+    }
+  }
+  if (bl < 1e-6) return null;
+  const a = ring[bi];
+  const b = ring[(bi + 1) % ring.length];
+  const ux = (b.x - a.x) / bl;
+  const uy = (b.y - a.y) / bl;
+  const vx = -uy;
+  const vy = ux;
+  let u0 = Infinity;
+  let u1 = -Infinity;
+  let v0 = Infinity;
+  let v1 = -Infinity;
+  for (const p of ring) {
+    const du = (p.x - a.x) * ux + (p.y - a.y) * uy;
+    const dv = (p.x - a.x) * vx + (p.y - a.y) * vy;
+    if (du < u0) u0 = du;
+    if (du > u1) u1 = du;
+    if (dv < v0) v0 = dv;
+    if (dv > v1) v1 = dv;
+  }
+  const corner = (du: number, dv: number) => new Pt(a.x + du * ux + dv * vx, a.y + du * uy + dv * vy);
+  return [corner(u0, v0), corner(u1, v0), corner(u1, v1), corner(u0, v1)];
+}
+
+/**
+ * 把矩形等比缩小到刚好落在可建区里（沿中心收缩）。
+ *
+ * 斜边地块上的楼要"扶正"成矩形，但外接矩形会有一角压出红线 ——
+ * 压出去就压到巷道 / 车道上了（gen 测试的"建筑不压路中线"就是盯这个）。
+ * 所以扶正之后还要**内接**：以中心为基准等比收缩，二分找最大的合法尺寸。
+ */
+function fitRectInBlock(rect: Pt[], block: Pt[]): Pt[] | null {
+  if (rect.length !== 4 || block.length < 3) return null;
+  const cx = (rect[0].x + rect[1].x + rect[2].x + rect[3].x) / 4;
+  const cy = (rect[0].y + rect[1].y + rect[2].y + rect[3].y) / 4;
+  // 除了"在可建区内"，还要离可建区边界留出余量 ——
+  // 可建区的边界本身就贴着路的外沿，楼角贴上去就等于压到车道了
+  //（gen 测试断言"建筑角点距路中线 ≥ 0.12 单位"）。
+  const EDGE_KEEP = 0.1;
+  const inside = (r: Pt[]): boolean => {
+    for (let i = 0; i < 4; i++) {
+      const p = r[i];
+      if (!pointInPolygon(p, block)) return false;
+      if (distToRing(p, block) < EDGE_KEEP) return false;
+      const m = new Pt((p.x + r[(i + 1) % 4].x) / 2, (p.y + r[(i + 1) % 4].y) / 2);
+      if (!pointInPolygon(m, block)) return false;
+    }
+    return true;
+  };
+  const scaled = (t: number): Pt[] =>
+    rect.map((p) => new Pt(cx + (p.x - cx) * t, cy + (p.y - cy) * t));
+  if (inside(rect)) return rect;
+  let lo = 0;
+  let hi = 1;
+  let best: Pt[] | null = null;
+  for (let i = 0; i < 14; i++) {
+    const mid = (lo + hi) / 2;
+    if (inside(scaled(mid))) {
+      best = scaled(mid);
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return best;
+}
+
+function gateSolid(
+  ring: Pt[],
+  h: number,
+  kind: SolidKind,
+  block?: Pt[]
+): { ring: Pt[]; h: number; kind: SolidKind } {
   if (kind === 'canopy') return { ring, h, kind };
   const minDepthU = MIN_DEPTH_M / 7;
   let out = ring;
   let fit = shapeFit(out);
+
+  // ⓪ 斜边 → 规整矩形（主轴外接矩形）。
+  //
+  // 面积涨幅控制在 45% 以内：涨幅再大说明这块地本来就是楔形，
+  // 扶正会明显压出红线，那就保持原样交给 ① 倒角。
+  const rect = typeof process !== 'undefined' && process.env.NORECTIFY ? null : minAreaRect(out);
+  if (rect) {
+    const ra = Math.abs(area(rect));
+    if (ra > fit.area * 0.95) {
+      // 外接矩形要**内接到可建区里**：扶正后的角会吃掉退线，直接压到巷道 / 车道上。
+      // 楔形地内接后可能很小 —— 只要还剩三成面积就用它：
+      // "小一点的规整矩形"永远比"带斜角的多边形"好看（用户核对时的原话）。
+      const fitted = block && block.length >= 3 ? fitRectInBlock(rect, block) : rect;
+      if (fitted && Math.abs(area(fitted)) > fit.area * 0.3) {
+        out = fitted;
+        fit = shapeFit(out);
+      }
+    }
+  }
 
   // ① 锐角 → 倒角。面积只少几个点，几何仍然在原来的轮廓里。
   if (fit.minAngle < MIN_ANGLE_DEG) {
@@ -1999,13 +2288,112 @@ function gateSolid(ring: Pt[], h: number, kind: SolidKind): { ring: Pt[]; h: num
   return { ring: out, h, kind };
 }
 
+/**
+ * 一个地块里排**多栋平行板楼**（参考图里住宅组团的做法）。
+ *
+ * 现状是"一个地块一栋楼、楼居中、其余全是草坪"——从空中读是"草坪上散着几栋楼"，
+ * 参考图读的是"几栋平行的板楼 + 楼间院子 + 两端绿地"。差的就是这一层。
+ *
+ * 规则：
+ *   · 沿地块**长向**排 N 栋，进深固定 12 m，栋间净距 = `building.spacingM`；
+ *   · N = min(每地块楼栋上限, 能排下的栋数)，排不下 2 栋就返回 null（走旧路径）；
+ *   · 楼带整体在短向居中，两端各留一块院子；
+ *   · 每栋楼仍走形状体检（进深下限 / 倒角），不合格的整栋丢掉。
+ *
+ * 只对板楼类体量生效（住宅 / 商业 / 市政）；塔楼类（CBD）留给裙房 + 内院那一步。
+ */
+function rowLayout(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | null {
+  const BP = c.model.params.building;
+  if (BP.maxPerParcel < 2) return null;
+  // 先只在住宅上开：商业 / 市政地块的地面要留给绿化分区与内院
+  // （实测多栋排布会把商业绿地率从 29% 压到 23%），它们等 P2 的
+  // "塔楼 + 裙房 + 内院"那一步再单独处理。
+  if (c.use !== 'residential') return null;
+  if (st.kind === 'tower' || st.kind === 'warehouse') return null;
+
+  const { bb, f } = c;
+  const depth = u(14); // 板楼进深 14 m
+  const gap = u(BP.spacingM);
+  const setback = u(1.2); // 楼端退线
+  // 排成多栋时进深下限放宽到 7 m：条带被斜边地块裁掉一角后，
+  // 8 m 的通用门槛会把一半条带判死（实测住宅只有一栋能通过）。
+  const minDepthU = u(7);
+  // 楼在带里占多满：旧口径 cover 是"一栋楼居中"的占地率（住宅 0.4），
+  // 排成多栋时每栋要占满自己的带（0.78），否则楼与楼之间会空出一条大缝。
+  const cover = Math.min(0.78, st.cover + 0.38);
+
+  // 两种朝向都试：板楼长边顺着地块长向（宽地块），或垂直（狭长地块），
+  // 取能排下更多栋的那一种 —— 狭长地块照样能排成两栋前后串联。
+  const tryDir = (alongU: boolean): Brick[] | null => {
+    const long = alongU ? bb.w : bb.h;
+    const short = alongU ? bb.h : bb.w;
+    const avail = short - setback * 2;
+    const n = Math.min(BP.maxPerParcel, Math.floor((avail + gap) / (depth + gap)));
+    if (n < 2) return null;
+    // 太长的楼读成"一栋大楼"，参考图里的板楼长度在 90 m 以内
+    if (long > u(90)) return null;
+
+    const used = n * depth + (n - 1) * gap;
+    const start = (short - used) / 2;
+    const out: Brick[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const s0 = start + i * (depth + gap);
+      const s1 = s0 + depth;
+      // ① 先在**长向通到地块外**切出一条带，再与可建区求交 ——
+      //    这样带子是顺着地块的真实斜边裁出来的，而不是"矩形减一圈"，
+      //    斜边地块上不会切掉一多半。
+      const strip = alongU
+        ? rect(f, bb.u0 - 1, bb.u1 + 1, bb.v0 + s0, bb.v0 + s1)
+        : rect(f, bb.u0 + s0, bb.u0 + s1, bb.v0 - 1, bb.v1 + 1);
+      const parts = intersect(toCCW(strip), Array.from(c.block), 0.15);
+      if (parts.length === 0) continue;
+      const band = parts.reduce((a, b) => (Math.abs(area(a)) > Math.abs(area(b)) ? a : b));
+      const bandA = Math.abs(area(band));
+      if (bandA < 0.12) continue;
+
+      // ② 带子里的楼：沿长向居中，长度 = 带长 × cover，进深保持带深
+      const gb = bboxOf(band, f);
+      const bandLong = alongU ? gb.w : gb.h;
+      const bandShort = alongU ? gb.h : gb.w;
+      const lenC = clamp(bandLong * cover, u(16), Math.max(u(10), bandLong - u(2)));
+      const off = (bandLong - lenC) / 2;
+      const fpRect = alongU
+        ? rect(f, gb.u0 + off, gb.u0 + off + lenC, gb.v0, gb.v0 + bandShort)
+        : rect(f, gb.u0, gb.u0 + bandShort, gb.v0 + off, gb.v0 + off + lenC);
+      const fpParts = intersect(toCCW(fpRect), band, 0.3);
+      if (fpParts.length === 0) continue;
+      const fp = fpParts.reduce((a, b) => (Math.abs(area(a)) > Math.abs(area(b)) ? a : b));
+      const fpA = Math.abs(area(fp));
+      if (fpA < 0.12) continue;
+      if (!fitsKind(fp, st.kind, minDepthU)) continue;
+      out.push({
+        fp,
+        kind: st.kind,
+        wall: st.wall,
+        roof: st.roof,
+        hMin: st.hMin,
+        hMax: st.hMax,
+        low: false,
+      });
+    }
+    return out.length >= 2 ? out : null;
+  };
+
+  const a = tryDir(bb.w >= bb.h);
+  const b = tryDir(bb.w < bb.h);
+  if (a && b) return a.length >= b.length ? a : b;
+  return a ?? b;
+}
 function planParcel(c: Ctx) {
   const ring = Array.from(c.block);
   const A = Math.abs(area(ring));
   if (A < 0.5) return;
 
   const st = PARCEL_STYLE[c.use] ?? PARCEL_STYLE.residential;
-  const bricks = bricksFor(ring, A, st, c.use);
+  // 先试"一个地块排多栋平行板楼"（参考图里的住宅组团做法）；
+  // 排不出来（地块太窄 / 形状太怪）再退回原来的一地块一栋。
+  const bricks = rowLayout(c, ring, A, st) ?? bricksFor(ring, A, st, c.use);
 
   if (bricks.length === 0) {
     if (typeof process !== 'undefined' && process.env.PARCEL_DEBUG && process.env.PARCEL_VERBOSE) {
@@ -2039,10 +2427,10 @@ function planParcel(c: Ctx) {
   // 每个小地块自己铺的，街区那一层只有一张兜底基底。所以"商业街区的铺装
   // 里有没有绿地"取决于这一层，改街区级是改不到的。
   const HARD_OF: Partial<Record<LandUse, [number, MatKey]>> = {
-    cbd: [0.18, 'stonePave'],
-    commercial: [0.26, 'paver'],
-    civic: [0.36, 'paver'],
-    industrial: [0.15, 'gravel'],
+    cbd: [0.15, 'stonePave'],
+    commercial: [0.2, 'paver'],
+    civic: [0.34, 'paver'],
+    industrial: [0.13, 'gravel'],
   };
   const hard = HARD_OF[c.use];
   if (hard) pavingPartition(c, hard[0], hard[1]);
@@ -2051,6 +2439,7 @@ function planParcel(c: Ctx) {
   const want = Math.min(3, Math.max(1, Math.round(A / 12)));
   scatter(c, want, { avoid: c.footprints, minDist: 0.45, kind: 'tree' });
 }
+
 
 /**
  * 把环内缩到目标面积。二分求内缩距离，返回内缩后的环。
@@ -3094,7 +3483,10 @@ function tensorPartition(
  * 巷道的端点是子街坊的边界，也就是一层内部路的**路边**，
  * 所以不会盖到沥青上去，不必担心 0.0128 > 0.0125 这件事。
  */
-function drawSeams(c: Ctx, lanes: { pts: Pt[]; w: number; mat: MatKey; y: number }[]) {
+function drawSeams(
+  c: Ctx,
+  lanes: { pts: Pt[]; w: number; mat: MatKey; y: number; mark?: boolean }[]
+) {
   const ring = Array.from(c.block);
   for (const ln of lanes) {
     const pts = clipPath(ln.pts, ring);
@@ -3102,7 +3494,33 @@ function drawSeams(c: Ctx, lanes: { pts: Pt[]; w: number; mat: MatKey; y: number
       const s = stripe(pts[i], pts[i + 1], ln.w);
       if (!s) continue;
       addSurface(c, 'zone_alley', s, ln.mat, ln.y, false);
+      // 沥青路加中心虚线：路面读起来才是"路"，而不是一条灰缝
+      if (ln.mark) addCenterDash(c, pts[i], pts[i + 1], ln.y);
     }
+  }
+}
+
+
+/**
+ * 一段路面上的中心虚线（白色短划）。
+ *
+ * 划的长度与间隔按 1:2（3 m 实 / 6 m 空），和城市道路的标线节奏一致。
+ * 路面宽度只有 3.5 m 时，中间那条线就是这条路唯一的标线。
+ */
+function addCenterDash(c: Ctx, a: Pt, b: Pt, y: number) {
+  const L = Pt.distance(a, b);
+  if (L < u(4)) return;
+  const ux = (b.x - a.x) / L;
+  const uy = (b.y - a.y) / L;
+  const dash = u(3);
+  const gap = u(6);
+  const w = u(0.16);
+  for (let t = u(1.5); t + dash <= L; t += dash + gap) {
+    const p0 = new Pt(a.x + ux * t, a.y + uy * t);
+    const p1 = new Pt(a.x + ux * (t + dash), a.y + uy * (t + dash));
+    const s = stripe(p0, p1, w);
+    if (!s) continue;
+    addSurface(c, 'alley_mark', s, 'markWhite', y + 0.0006, false);
   }
 }
 
@@ -3910,6 +4328,87 @@ function emitParkingRing(
   if (lay && lay.count >= 8) parkAccess(c, lot, name, entry);
 
   if (island && (lay ? lay.count >= 20 : false)) addIsland(c, lot, name, ax.dir);
+
+  // 围栏：每块停车坪自己围一圈（原来只有专用停车用地围，商业 / 工业地块里的
+  // 停车坪是敞着的 —— 用户核对时发现"停车场的围栏没有生成"）。
+  // 专用停车用地例外：那里沿**地块边缘**围（parkingFence），不重复围坪。
+  if (c.use !== 'parking') parkingLotFence(c, lot, entry, name);
+  parkingLamps(c, lot);
+}
+
+/**
+ * 停车坪围栏：闭环 + 一个车道宽的开口。
+ *
+ * 开口位置：优先取 `entry`（出入口）最近的那条边；没有出入口就取最长边。
+ * 围栏段落里若压到建筑（楼贴着停车坪），那一段直接跳过 —— 栏杆横穿楼体
+ * 在三维里是穿模。
+ */
+function parkingLotFence(c: Ctx, lot: Pt[], entry: Pt[], name: string) {
+  if (lot.length < 3) return;
+  const openLen = u(PARK_OPEN_M);
+  const paths: PathFeature[] = [];
+  const props: PropFeature[] = [];
+
+  // 找开口边：出入口所在的那条边；没有就取最长边
+  let bestEdge = -1;
+  let bestScore = -Infinity;
+  for (let i = 0; i < lot.length; i++) {
+    const a = lot[i];
+    const b = lot[(i + 1) % lot.length];
+    const L = Pt.distance(a, b);
+    if (L < 0.4) continue;
+    const mid = new Pt((a.x + b.x) / 2, (a.y + b.y) / 2);
+    let score = L * 0.2;
+    for (const e of entry) score -= Pt.distance(mid, e) * 2;
+    if (score > bestScore) {
+      bestScore = score;
+      bestEdge = i;
+    }
+  }
+  if (bestEdge < 0) return;
+
+  let k = 0;
+  for (let i = 0; i < lot.length; i++) {
+    const a = lot[i];
+    const b = lot[(i + 1) % lot.length];
+    const L = Pt.distance(a, b);
+    if (L < 0.3) continue;
+
+    let segs: Pt[][] = [[a, b]];
+    if (i === bestEdge && L > openLen * 2.2) {
+      const at = (t: number) => new Pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+      const half = openLen / 2 / L;
+      const t0 = Math.max(0.1, 0.5 - half);
+      const t1 = Math.min(0.9, 0.5 + half);
+      segs = [
+        [a, at(t0)],
+        [at(t1), b],
+      ].filter((s) => Pt.distance(s[0], s[1]) > 0.25);
+    }
+
+    for (const seg of segs) {
+      // 压到建筑的那一小段**截短**而不是整段跳过 ——
+      // 整段跳过会让这条边完全没有栏杆，俯视图上就是"围栏有的有、有的没有"。
+      let pts = seg;
+      const mid = new Pt((seg[0].x + seg[1].x) / 2, (seg[0].y + seg[1].y) / 2);
+      if (c.footprints.some((fp) => pointInPolygon(mid, fp))) {
+        const trimmed = trimByFootprint(seg, c.footprints);
+        if (!trimmed) continue;
+        pts = trimmed;
+      }
+      addRail({
+        pts,
+        namePrefix: `parkfence_${name}_${i}_${k++}`,
+        group: groupOf(c.use),
+        y: 0.02,
+        spec: RAIL_PARK,
+        paths,
+        props,
+      });
+    }
+  }
+  c.res.paths.push(...paths);
+  c.res.props.push(...props);
 }
 
 /** 坪内绿化岛：沿主轴切一条窄带，裁到坪轮廓内 */
@@ -4376,6 +4875,95 @@ function boundaryHedge(c: Ctx, segments: number, gaps: { at: Pt; r: number }[] =
       props,
     });
   });
+  c.res.props.push(...props);
+}
+
+/**
+ * 地块边界围边：**绿篱与栏杆混排**，按 4 / 4 / 2 的比例分配，路口不摆。
+ *
+ * 用户核对意见（图 2）："低矮绿篱块和围栏应该是混放，围绕地块绿篱按照 4/4/2
+ * 比例，不摆放/绿篱/栏杆 的比例摆放，路口位置不放置"。
+ *
+ * 实现口径：
+ *   · 沿地块环按周长切成 10 段，按 **4 段绿篱 / 4 段栏杆 / 2 段留空** 分配；
+ *   · 10 段用固定模式 `绿-杆-绿-杆-绿-杆-绿-杆-空-空` 交错，
+ *     再随机旋转起点 —— 否则每块地的围边长得一模一样；
+ *   · **路口不摆**：地块环的转角（相邻两边夹角 < 150°）就是街道转角 / 路口，
+ *     离转角 2.5 m 以内的段整段跳过；显式给出的出入口（gaps）同样跳过。
+ */
+const EDGE_PATTERN: ('hedge' | 'rail' | 'none')[] = [
+  'hedge', 'rail', 'hedge', 'rail', 'hedge', 'rail', 'hedge', 'rail', 'none', 'none',
+];
+
+function boundaryFence(c: Ctx, opts: { spec?: RailSpec; gaps?: { at: Pt; r: number }[] } = {}) {
+  const ring = Array.from(c.block);
+  if (ring.length < 3) return;
+  const spec = opts.spec ?? RAIL_PARK;
+  const gaps = opts.gaps ?? [];
+
+  // 只在**靠近路的地块边缘**摆：街区的外沿就是城市道路，
+  // 所以"离 patch（街区）边界 3.5 m 以内的那条边"就是临街面。
+  // 地块内部的分割线两侧不放 —— 那些地方本该是院子，不是围栏。
+  const patchRing = c.patch.shape.length >= 3 ? c.patch.shape : null;
+  const nearRoad = (a: Pt, b: Pt): boolean => {
+    if (!patchRing) return false;
+    const mid = new Pt((a.x + b.x) / 2, (a.y + b.y) / 2);
+    return distToRing(mid, patchRing) < u(3.5);
+  };
+
+  // 段落：每 5.5 m 一段（比之前的 10 段更密），模式 **2 栏杆 + 3 绿篱** 循环
+  const SEG_M = 5.5;
+  const PATTERN: ('hedge' | 'rail')[] = ['rail', 'rail', 'hedge', 'hedge', 'hedge'];
+  const segLen = u(SEG_M);
+  const cornerClear = u(2.5);
+
+  const paths: PathFeature[] = [];
+  const props: PropFeature[] = [];
+  let hedgeRun = 0;
+  let railRun = 0;
+  let patIdx = Rng.int(0, PATTERN.length - 1);
+
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    const L = Pt.distance(a, b);
+    if (L < segLen * 0.8) continue;
+    if (!nearRoad(a, b)) continue; // 只有临街的边才摆
+
+    const at = (t: number) => new Pt(a.x + ((b.x - a.x) * t) / L, a.y + ((b.y - a.y) * t) / L);
+    for (let s = 0; s + u(1.2) <= L; s += segLen) {
+      const s1 = Math.min(L, s + segLen);
+      const p0 = at(s / L);
+      const p1 = at(s1 / L);
+      const mid = new Pt((p0.x + p1.x) / 2, (p0.y + p1.y) / 2);
+
+      // 路口 / 转角：不摆
+      if (ring.some((q) => Pt.distance(mid, q) < cornerClear)) continue;
+      // 出入口：不摆
+      if (gaps.some((g) => Pt.distance(mid, g.at) < g.r)) continue;
+
+      if (PATTERN[patIdx % PATTERN.length] === 'hedge') {
+        addHedgeRun({
+          pts: [p0, p1],
+          namePrefix: `edgehedge_${hedgeRun++}`,
+          group: groupOf(c.use),
+          props,
+        });
+      } else {
+        addRail({
+          pts: [p0, p1],
+          namePrefix: `bounds_${railRun++}`,
+          group: groupOf(c.use),
+          y: 0.02,
+          spec,
+          paths,
+          props,
+        });
+      }
+      patIdx++;
+    }
+  }
+  c.res.paths.push(...paths);
   c.res.props.push(...props);
 }
 

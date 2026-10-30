@@ -11,8 +11,9 @@
 //   · 只给车行道够宽的路（主干路 / 宽次干路）。窄支路本来就没护栏，设了反而挡人；
 //   · 一段 9 m、开口 3.5 m —— 约等于"两个店面 + 一个出入口"，是最小可读的节奏；
 //   · 路口两侧各留 2.5 m 净距，否则栏杆会横在转角半径上；
-//   · 立在**路缘石内侧 0.45 m**（人行道上），不是红线也不是路中心 ——
-//     这样改路宽时它跟着路缘走，不会站进车行道。
+//   · 立在**地块边缘**（人行道外沿 / 绿化带靠地块的一侧）——
+//     原来立在路缘内侧 0.45 m，等于把人行道切成一条一米宽的窄道，
+//     用户核对后改成"围栏应该在地块边缘，不应该在人行道上"。
 //
 // 构件形态见 `rails.ts`：两根悬空横杆 + 一排立柱。原来是一堵 1.1 m 高的实心矮墙，
 // 俯视没问题，进三维就露馅（参考图里的栏杆是通透的）。
@@ -37,8 +38,15 @@ const GAP_M = 3.5;
 /** 路口净距（米）。site-studio 的 JUNCTION_CLEAR 是 1.5 m，那是人行尺度；
     车行路口要留出缘石转角，这里取 2.5 m */
 const JUNCTION_CLEAR_M = 2.5;
-/** 立杆位置：路缘石内侧（米） */
-const KERB_INSET_M = 0.45;
+/**
+ * 护栏离**地块边缘**的距离（米）。
+ *
+ * 原来立在"路缘石内侧 0.45 m"—— 也就是**人行道上**，把整条人行道切成一米宽的
+ * 窄条（用户指出的问题：围栏应该在地块边缘，不应该在人行道上）。
+ * 现在改成立在**人行道外沿**：有绿化带就立在绿化带靠地块的一侧，
+ * 没有绿化带就立在人行道靠地块的一侧 —— 也就是地块的边界线。
+ */
+const EDGE_SETBACK_M = 0.3;
 /** 总量兜底：按等级优先排，排满就停 —— 截断会让远处的路一段栏杆都没有 */
 const MAX_RUNS = 900;
 
@@ -84,8 +92,12 @@ export function roadsideRailings(net: RoadNet): RailingsResult {
     const s0 = t0 * e.len + clear;
     const s1 = t1 * e.len - clear;
     if (s1 - s0 < u(RUN_M) * 0.55) continue;
-    const dL = e.insetL - e.vgL - e.swL + u(KERB_INSET_M);
-    const dR = -(e.insetR - e.vgR - e.swR + u(KERB_INSET_M));
+    // 护栏立地块边缘（人行道外沿 / 绿化带靠地块的一侧），不在人行道上
+    const back = u(EDGE_SETBACK_M);
+    const edgeL = e.vgL > 0.05 ? e.insetL - e.vgL : e.insetL - e.swL;
+    const edgeR = e.vgR > 0.05 ? e.insetR - e.vgR : e.insetR - e.swR;
+    const dL = edgeL - back;
+    const dR = -(edgeR - back);
     if (walkOn(e, true)) plan.push({ e, left: true, s0, s1, d: dL });
     if (walkOn(e, false)) plan.push({ e, left: false, s0, s1, d: dR });
   }

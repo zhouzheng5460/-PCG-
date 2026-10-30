@@ -9,6 +9,8 @@ export interface RenderOptions {
   elevation?: number; // 度
   background?: [number, number, number];
   zoom?: number;
+  /** 只渲染这个世界坐标窗口（x / z 平面）内的三角形，并按窗口取景 —— 用来出局部特写 */
+  window?: { minX: number; maxX: number; minZ: number; maxZ: number };
 }
 
 export function renderPrimitives(prims: Primitive[], opts: RenderOptions = {}): { width: number; height: number; rgba: Uint8Array; ids: Int32Array } {
@@ -31,13 +33,17 @@ export function renderPrimitives(prims: Primitive[], opts: RenderOptions = {}): 
   // 取景按"有立面的几何"算，避免被整块地面底板撑小
   const framed = prims.filter((p) => p.group !== 'ground');
   const source = framed.length > 0 ? framed : prims;
+  const win = opts.window;
   let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
   for (const p of source)
     for (let i = 0; i < p.positions.length; i += 3) {
-      minX = Math.min(minX, p.positions[i]); maxX = Math.max(maxX, p.positions[i]);
-      minY = Math.min(minY, p.positions[i + 1]); maxY = Math.max(maxY, p.positions[i + 1]);
-      minZ = Math.min(minZ, p.positions[i + 2]); maxZ = Math.max(maxZ, p.positions[i + 2]);
+      const px = p.positions[i], py = p.positions[i + 1], pz = p.positions[i + 2];
+      if (win && (px < win.minX || px > win.maxX || pz < win.minZ || pz > win.maxZ)) continue;
+      minX = Math.min(minX, px); maxX = Math.max(maxX, px);
+      minY = Math.min(minY, py); maxY = Math.max(maxY, py);
+      minZ = Math.min(minZ, pz); maxZ = Math.max(maxZ, pz);
     }
+  if (!Number.isFinite(minX)) { minX = -1; maxX = 1; minY = 0; maxY = 1; minZ = -1; maxZ = 1; }
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   const cz = (minZ + maxZ) / 2;
@@ -63,6 +69,12 @@ export function renderPrimitives(prims: Primitive[], opts: RenderOptions = {}): 
     const { positions, normals, indices, color } = prim;
     for (let t = 0; t < indices.length; t += 3) {
       const ia = indices[t] * 3, ib = indices[t + 1] * 3, ic = indices[t + 2] * 3;
+      if (win) {
+        // 三角形质心在窗口外就整块跳过 —— 局部特写用
+        const mx = (positions[ia] + positions[ib] + positions[ic]) / 3;
+        const mz = (positions[ia + 2] + positions[ib + 2] + positions[ic + 2]) / 3;
+        if (mx < win.minX || mx > win.maxX || mz < win.minZ || mz > win.maxZ) continue;
+      }
       const A = project(positions[ia], positions[ia + 1], positions[ia + 2]);
       const B = project(positions[ib], positions[ib + 1], positions[ib + 2]);
       const C = project(positions[ic], positions[ic + 1], positions[ic + 2]);

@@ -79,13 +79,28 @@ export function buildProp(p: PropFeature, baseY = 0.01): Primitive[] {
     case 'lampDouble': {
       const h = 1.8 * s;
       out.push(cylinder(c, 0.026 * s, y0, h, `${p.name}_p`, g, MAT.metal, 3));
-      const arms = p.kind === 'lampDouble' ? [1, -1] : [1];
-      for (const side of arms) {
-        const ax = c.x + dirX * 0.2 * side;
-        const ay = c.y + dirY * 0.2 * side;
-        out.push(...box(new Pt(ax, ay), 0.4 * s, 0.045 * s, y0 + h - 0.03, 0.045 * s, rot, `${p.name}_a`, g, MAT.metal));
+      // 灯臂沿 rot 方向伸向**道路中线**，杆上只有**一个**灯头。
+      // 双头灯（一杆两灯）已按用户要求取消：俯视图里读成"杆顶两个白块"，
+      // 且总有一个灯头不在车道上方。
+      const arms = [0.44];
+      for (const t of arms) {
+        const ax = c.x + dirX * t * s;
+        const ay = c.y + dirY * t * s;
         out.push(
-          ...box(new Pt(c.x + dirX * 0.4 * side, c.y + dirY * 0.4 * side), 0.15 * s, 0.09 * s, y0 + h - 0.08, 0.06 * s, rot, `${p.name}_h`, g, WHITE, WHITE)
+          ...box(
+            new Pt(c.x + dirX * (t / 2) * s, c.y + dirY * (t / 2) * s),
+            t * s,
+            0.045 * s,
+            y0 + h - 0.03,
+            0.045 * s,
+            rot,
+            `${p.name}_a`,
+            g,
+            MAT.metal
+          )
+        );
+        out.push(
+          ...box(new Pt(ax, ay), 0.15 * s, 0.09 * s, y0 + h - 0.08, 0.06 * s, rot, `${p.name}_h`, g, WHITE, WHITE)
         );
       }
       break;
