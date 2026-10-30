@@ -1,0 +1,220 @@
+// 场景要素：整个生成器只产出这四种要素，2D 画布、three.js 预览、GLB 导出都是它的消费者。
+// 这样"编辑器里看到的"与"导出的"不可能不一致 —— 它们读的是同一份数组。
+
+import { Pt } from '../core/geom';
+import type { MatKey } from './palette';
+
+/** 贴地薄面：路面、铺装、绿地、标线、车位线 */
+export interface SurfaceFeature {
+  name: string;
+  /** 分组路径，导出后是 glTF 节点名，供 DCC 里整体选中 */
+  group: string;
+  ring: Pt[];
+  mat: MatKey;
+  /** 高度偏移，用来解决共面 z-fighting；语义上代表"这一层比地面高多少" */
+  y: number;
+}
+
+export type SolidKind =
+  | 'tower'
+  | 'slab'
+  | 'podium'
+  | 'house'
+  | 'warehouse'
+  | 'canopy'
+  /**
+   * 配套商业 / 沿街店铺：1~2 层的矮体量。
+   *
+   * 为什么要单独一类：地块被张量切出细长条或楔形时，按"塔楼"去盖就是一栋
+   * 六层高的纸片楼。这种位置在真实城市里本来就是沿街小商业 —— 矮、贴边、
+   * 进深小。给它一个独立的 kind，才能在图层里单独开关，也才能单独校核
+   * 最小进深（见 modern.ts 的 shapeFit）。
+   */
+  | 'retail';
+
+/** 体块：建筑、雨棚、围墙、树冠以外的实体 */
+export interface SolidFeature {
+  name: string;
+  group: string;
+  ring: Pt[];
+  y0: number;
+  h: number;
+  wallMat: MatKey;
+  roofMat: MatKey;
+  kind: SolidKind;
+}
+
+export type PropKind =
+  | 'tree'
+  | 'treeSmall'
+  | 'conifer'
+  | 'lamp'
+  | 'lampDouble'
+  | 'bench'
+  | 'bin'
+  | 'sign'
+  | 'planter'
+  | 'shelter'
+  | 'fountain'
+  | 'bollard'
+  | 'hedge'
+  | 'post'
+  | 'car'
+  | 'flagpole';
+
+/**
+ * 已停用的道具类型。
+ *
+ * 用户的判断：这些小件（长椅 / 垃圾桶 / 指示牌 / 花坛 / 公交亭 / 喷泉 /
+ * 护柱 / 车辆 / 旗杆）在**城市尺度**下不但看不清，还抢行道树和路灯的视线 ——
+ * 一座上万栋楼的城市里，一把 1.2 m 的长椅连一个像素都占不满，纯粹是面数负担。
+ *
+ * 保留类型定义和低模，只在生成出口统一拦掉：将来做街区级细看时，
+ * 把某个 kind 从这里删掉就回来了，不用重写建模。
+ */
+export const DROPPED_PROPS: ReadonlySet<PropKind> = new Set<PropKind>([
+  'bench',
+  'bin',
+  'sign',
+  'planter',
+  'shelter',
+  'fountain',
+  'bollard',
+  'car',
+  'flagpole',
+]);
+
+/** 点状道具：树、路灯、绿篱…… 几何在 props.ts 里按 kind 生成，坐标只在这里存一份 */
+export interface PropFeature {
+  name: string;
+  group: string;
+  kind: PropKind;
+  at: Pt;
+  /** 朝向（弧度），0 = +X */
+  rot: number;
+  /** 尺寸倍率 */
+  scale: number;
+  /** 是否随机翻转，让树冠不整齐 */
+  seed: number;
+}
+
+/** 线性要素：内部道路、建筑入口路、园路、围栏 */
+export interface PathFeature {
+  name: string;
+  group: string;
+  pts: Pt[];
+  width: number;
+  mat: MatKey;
+  y: number;
+  /** 围栏是竖起来的，需要高度；道路为 0 */
+  height?: number;
+  /**
+   * 这条线在 2D 俯视图里不画。
+   *
+   * 栏杆被拆成两根横杆（上下各一根）之后，俯视时两根完全重合 ——
+   * 画两遍只是让线更深、更粗，白吃一次描边开销。3D / GLB 照样两根都出。
+   */
+  hidden2d?: boolean;
+}
+
+export type LandUse =
+  | 'cbd'
+  | 'commercial'
+  | 'residential'
+  | 'industrial'
+  | 'civic'
+  | 'park'
+  | 'parking'
+  | 'green'
+  /**
+   * 禁建 / 保留地：用户画的固定形状区域。
+   * 不做分区规划（不参与 CBD/商业/住宅的分档），也不产出建筑，
+   * 但它仍然是一个"封闭地块"——照样有地坪、有边界、四周的路照常连。
+   */
+  | 'reserved';
+
+/** 单个地块的规划结果，UI 要按用途统计与着色 */
+export interface LotInfo {
+  index: number;
+  use: LandUse;
+  area: number;
+  far: number;
+  buildings: number;
+  parkingBays: number;
+  trees: number;
+}
+
+export interface SceneStats {
+  surfaces: number;
+  solids: number;
+  props: number;
+  paths: number;
+  byUse: Record<string, number>;
+  propsByKind: Record<string, number>;
+}
+
+export interface Scene {
+  surfaces: SurfaceFeature[];
+  solids: SolidFeature[];
+  props: PropFeature[];
+  paths: PathFeature[];
+  lots: LotInfo[];
+  stats: SceneStats;
+}
+
+export function emptyScene(): Scene {
+  return {
+    surfaces: [],
+    solids: [],
+    props: [],
+    paths: [],
+    lots: [],
+    stats: { surfaces: 0, solids: 0, props: 0, paths: 0, byUse: {}, propsByKind: {} },
+  };
+}
+
+// ---------------------------------------------------------------- 几何小工具
+
+export function ringArea(ring: Pt[]): number {
+  let s = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(s) / 2;
+}
+
+export function ringCenter(ring: Pt[]): Pt {
+  let x = 0;
+  let y = 0;
+  for (const p of ring) {
+    x += p.x;
+    y += p.y;
+  }
+  return new Pt(x / ring.length, y / ring.length);
+}
+
+/** 把 p 绕 c 旋转 a 弧度 */
+export function rotateAbout(p: Pt, c: Pt, a: number): Pt {
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  const cs = Math.cos(a);
+  const sn = Math.sin(a);
+  return new Pt(c.x + dx * cs - dy * sn, c.y + dx * sn + dy * cs);
+}
+
+/** 逆时针（有向面积为正） */
+export function toCCW(ring: Pt[]): Pt[] {
+  let s = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % ring.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return s < 0 ? ring.slice().reverse() : ring;
+}
+
+export function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}

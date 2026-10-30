@@ -1,0 +1,170 @@
+// 道具低模：树、路灯、长椅、垃圾桶、指示牌、花坛、公交亭、喷泉、护柱、汽车。
+//
+// 每个道具都按"能认出是什么"的最低面数来做：
+//   树 24 面、路灯 33 面、长椅 24 面、垃圾桶 15 面。
+// 城市里道具数量是几百到上千，单件多花 20 面就会多出几万个三角形。
+
+import { Pt } from '../core/geom';
+import type { PropFeature } from '../scene/types';
+import { MAT, treeGreen } from '../scene/palette';
+import type { Primitive } from './mesh';
+import { box, cylinder, flatPolygon } from './mesh';
+
+const WHITE: [number, number, number] = [0.94, 0.94, 0.9];
+
+export function buildProp(p: PropFeature, baseY = 0.01): Primitive[] {
+  const g = p.group;
+  const c = p.at;
+  const s = p.scale;
+  const rot = p.rot;
+  const y0 = baseY;
+  const out: Primitive[] = [];
+  const dirX = Math.cos(rot);
+  const dirY = Math.sin(rot);
+
+  switch (p.kind) {
+    // 树一律是**立方体 + 一根极细的树干**。
+    // 绿从 palette.TREE_GREENS 里按 seed 取，所以同一片林子是深浅不一的绿，
+    // 不会像原来那样一堆锥体糊成一块同色斑。2D 画布读的是同一张表。
+    case 'tree': {
+      const th = 0.5 * s;
+      const g1 = treeGreen(p.seed);
+      out.push(cylinder(c, 0.032 * s, y0, th, `${p.name}_t`, g, MAT.trunk, 3));
+      out.push(
+        ...box(
+          new Pt(c.x, c.y),
+          0.62 * s,
+          0.62 * s,
+          y0 + th * 0.72,
+          0.78 * s,
+          rot + 0.2,
+          `${p.name}_c`,
+          g,
+          g1,
+          g1
+        )
+      );
+      break;
+    }
+    case 'treeSmall': {
+      const th = 0.3 * s;
+      const g1 = treeGreen(p.seed);
+      out.push(cylinder(c, 0.028 * s, y0, th, `${p.name}_t`, g, MAT.trunk, 3));
+      out.push(...box(c, 0.44 * s, 0.44 * s, y0 + th * 0.7, 0.56 * s, rot, `${p.name}_c`, g, g1, g1));
+      break;
+    }
+    case 'conifer': {
+      // 针叶树用"两层矮一点的方块"，俯视图上比圆叶树小一圈、颜色更冷
+      const th = 0.22 * s;
+      const g1 = treeGreen(p.seed);
+      out.push(cylinder(c, 0.026 * s, y0, th, `${p.name}_t`, g, MAT.trunk, 3));
+      out.push(...box(c, 0.5 * s, 0.5 * s, y0 + th * 0.7, 0.62 * s, rot, `${p.name}_c1`, g, g1, g1));
+      out.push(
+        ...box(
+          new Pt(c.x, c.y),
+          0.3 * s,
+          0.3 * s,
+          y0 + th * 0.7 + 0.62 * s,
+          0.42 * s,
+          rot + 0.4,
+          `${p.name}_c2`,
+          g,
+          g1,
+          g1
+        )
+      );
+      break;
+    }
+    case 'lamp':
+    case 'lampDouble': {
+      const h = 1.8 * s;
+      out.push(cylinder(c, 0.026 * s, y0, h, `${p.name}_p`, g, MAT.metal, 3));
+      const arms = p.kind === 'lampDouble' ? [1, -1] : [1];
+      for (const side of arms) {
+        const ax = c.x + dirX * 0.2 * side;
+        const ay = c.y + dirY * 0.2 * side;
+        out.push(...box(new Pt(ax, ay), 0.4 * s, 0.045 * s, y0 + h - 0.03, 0.045 * s, rot, `${p.name}_a`, g, MAT.metal));
+        out.push(
+          ...box(new Pt(c.x + dirX * 0.4 * side, c.y + dirY * 0.4 * side), 0.15 * s, 0.09 * s, y0 + h - 0.08, 0.06 * s, rot, `${p.name}_h`, g, WHITE, WHITE)
+        );
+      }
+      break;
+    }
+    case 'bench': {
+      out.push(...box(c, 0.36 * s, 0.1 * s, y0 + 0.09 * s, 0.03 * s, rot, `${p.name}_s`, g, MAT.wood));
+      out.push(...box(new Pt(c.x - dirX * 0.02, c.y - dirY * 0.02), 0.36 * s, 0.03 * s, y0 + 0.16 * s, 0.16 * s, rot, `${p.name}_b`, g, MAT.wood));
+      out.push(cylinder(new Pt(c.x - 0.13, c.y), 0.014, y0, 0.1, `${p.name}_l1`, g, MAT.metal, 3));
+      out.push(cylinder(new Pt(c.x + 0.13, c.y), 0.014, y0, 0.1, `${p.name}_l2`, g, MAT.metal, 3));
+      break;
+    }
+    case 'bin': {
+      out.push(cylinder(c, 0.055 * s, y0, 0.24 * s, `${p.name}_b`, g, MAT.metal, 5));
+      break;
+    }
+    case 'sign': {
+      out.push(cylinder(c, 0.018 * s, y0, 0.9 * s, `${p.name}_p`, g, MAT.metal, 3));
+      out.push(...box(new Pt(c.x, c.y), 0.26 * s, 0.03 * s, y0 + 0.78 * s, 0.2 * s, rot, `${p.name}_s`, g, WHITE, WHITE));
+      break;
+    }
+    case 'planter': {
+      out.push(...box(c, 0.5 * s, 0.34 * s, y0, 0.2 * s, rot, `${p.name}_p`, g, MAT.stonePave, MAT.grass));
+      break;
+    }
+    case 'shelter': {
+      const h = 0.52 * s;
+      out.push(...box(c, 1.15 * s, 0.52 * s, y0 + h, 0.05 * s, rot, `${p.name}_roof`, g, MAT.metal));
+      out.push(...box(new Pt(c.x - dirX * 0.5 * s, c.y - dirY * 0.5 * s), 0.05 * s, 0.05 * s, y0, h, rot, `${p.name}_c1`, g, MAT.metal));
+      out.push(...box(new Pt(c.x + dirX * 0.5 * s, c.y + dirY * 0.5 * s), 0.05 * s, 0.05 * s, y0, h, rot, `${p.name}_c2`, g, MAT.metal));
+      out.push(...box(new Pt(c.x - dirY * 0.2 * s, c.y + dirX * 0.2 * s), 1.1 * s, 0.03 * s, y0 + 0.1, h - 0.14, rot, `${p.name}_b`, g, MAT.wallGlass));
+      break;
+    }
+    case 'fountain': {
+      out.push(cylinder(c, 0.55 * s, y0, 0.12 * s, `${p.name}_basin`, g, MAT.stonePave, 10));
+      out.push(cylinder(c, 0.36 * s, y0 + 0.12 * s, 0.02, `${p.name}_water`, g, MAT.water, 10));
+      out.push(cylinder(c, 0.06 * s, y0 + 0.12 * s, 0.3 * s, `${p.name}_jet`, g, MAT.stonePave, 5));
+      break;
+    }
+    case 'bollard': {
+      out.push(cylinder(c, 0.035 * s, y0, 0.14 * s, `${p.name}_b`, g, MAT.metal, 4));
+      break;
+    }
+    case 'hedge': {
+      // 低矮绿篱：参考图里修剪过的灌木块 —— 1.5 m 长 × 0.9 m 宽 × 0.45 m 高。
+      // 原来这里是 4.2 × 1.5 × 1.1 m 的"绿墙"，一个块就顶掉半条人行道，
+      // 而且高过 1 m 就挡视线，读起来是围墙不是绿篱。
+      out.push(...box(c, 0.214 * s, 0.129 * s, y0, 0.064 * s, rot, `${p.name}_h`, g, MAT.leafDark, MAT.leaf));
+      break;
+    }
+    case 'post': {
+      // 栏杆立柱：6 cm 见方、1.1 m 高。把它单独成一种道具而不是靠 path 拉伸，
+      // 是因为俯视图里 path 只有线宽，立柱必须有"一节一节"的节奏。
+      const t = 0.0086 * s;
+      out.push(...box(c, t, t, y0, 0.157 * s, rot, `${p.name}_p`, g, MAT.fence));
+      break;
+    }
+    case 'car': {
+      out.push(...box(c, 0.44 * s, 0.19 * s, y0, 0.09 * s, rot, `${p.name}_b`, g, MAT.wallPanel));
+      out.push(...box(new Pt(c.x - dirX * 0.03, c.y - dirY * 0.03), 0.24 * s, 0.17 * s, y0 + 0.09 * s, 0.07 * s, rot, `${p.name}_r`, g, MAT.wallGlass));
+      break;
+    }
+    case 'flagpole': {
+      out.push(cylinder(c, 0.02 * s, y0, 1.6 * s, `${p.name}_p`, g, MAT.stonePave, 3));
+      const flag = [
+        new Pt(c.x, c.y),
+        new Pt(c.x + 0.32 * s, c.y),
+        new Pt(c.x + 0.32 * s, c.y + 0.2 * s),
+        new Pt(c.x, c.y + 0.2 * s),
+      ];
+      const f = flatPolygon(flag, y0 + 1.4 * s, `${p.name}_f`, g, MAT.markYellow);
+      if (f) {
+        f.doubleSided = true;
+        out.push(f);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  return out;
+}

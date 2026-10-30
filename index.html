@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TownForge — 可编辑城市生成器</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="topbar">
+        <div class="brand">
+          <span class="logo">◈</span>
+          <span>TownForge</span>
+          <em>张量场城市生成器</em>
+        </div>
+        <div class="views">
+          <button class="tab active" data-view="2d">平面编辑</button>
+          <button class="tab" data-view="3d">三维预览</button>
+        </div>
+        <div class="actions">
+          <button id="btn-export" class="primary">导出 GLB</button>
+        </div>
+      </header>
+
+      <div id="body">
+        <!-- 左：显示控制 + HUD 分析（看图时最常动的两件事） -->
+        <aside id="leftbar"></aside>
+
+        <main id="stage">
+          <canvas id="canvas2d"></canvas>
+          <div id="view3d"></div>
+          <div id="hint"></div>
+          <div id="stats"></div>
+        </main>
+
+        <!-- 右：属性面板（生成参数，调完就不再动） -->
+        <aside id="rightbar"></aside>
+      </div>
+    </div>
+    <script type="module" src="/src/ui/app.ts"></script>
+  </body>
+</html>
