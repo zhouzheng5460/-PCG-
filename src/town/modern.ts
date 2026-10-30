@@ -2455,7 +2455,7 @@ function towerPodium(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | 
 
   const inner = insetRing(ring, u(4.5));
   if (inner.length < 3) return null;
-  if (Math.abs(area(inner)) < 12) return null;
+  if (Math.abs(area(inner)) < 8) return null;
   // 裙房进深自适应：最多吃掉短边的 28%（每侧），否则小地块里内院会被挤没
   const gbi = bboxOf(inner, c.f);
   const shortSide = Math.min(gbi.w, gbi.h);
@@ -2464,9 +2464,12 @@ function towerPodium(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | 
   const court = insetRing(inner, depth);
   if (court.length < 3) return null;
   const courtA = Math.abs(area(court));
-  if (courtA < 2.5) return null;
+  if (courtA < 1.5) return null;
 
   const out: Brick[] = [];
+  // 裙房高度**整块地统一**：一段高一段矮会读成"几栋小楼"，
+  // 不是参考图里那条连续的商业界面。
+  const podiumH = BP.podiumHMin + Rng.float() * (BP.podiumHMax - BP.podiumHMin);
   const n = inner.length;
   // 留出 1~2 条最长边当出入口 / 开口（临街主面不摆裙房）
   const gapCount = n > 4 ? 2 : 1;
@@ -2494,8 +2497,8 @@ function towerPodium(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | 
       kind: 'podium',
       wall: c.use === 'civic' ? 'wallStone' : 'wallGlass',
       roof: 'roofLight',
-      hMin: BP.podiumHMin,
-      hMax: BP.podiumHMax,
+      hMin: podiumH,
+      hMax: podiumH,
       low: false,
     });
   }
@@ -2512,25 +2515,30 @@ function towerPodium(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | 
     if (Math.abs(area(g)) > 0.25) addSurface(c, 'court_green', g, 'grass', 0.0134, false);
   }
 
-  // 塔楼：内院里 1~2 栋，沿地块主轴居中
-  const towerW = clamp(cb.w * 0.56, u(12), u(34));
-  const towerD = clamp(cb.h * 0.56, u(12), u(34));
-  const two = courtA > 20 && BP.maxPerParcel >= 2;
+  // 塔楼：放在 **inner 的中心**（不是内院），允许底面压到裙房上 ——
+  // 参考图里的塔楼就是从裙房里长出来的，而不是孤零零坐在院心。
+  // 只锁在内院里的话，内院一小塔楼就放不下（12 m 见方的院心 inradius 只有 6 m）。
+  const ib = bboxOf(inner, c.f);
+  const iu = (ib.u0 + ib.u1) / 2;
+  const iv = (ib.v0 + ib.v1) / 2;
+  const towerW = clamp(ib.w * 0.5, u(12), u(34));
+  const towerD = clamp(ib.h * 0.5, u(12), u(34));
+  const two = courtA > 18 && BP.maxPerParcel >= 2;
   const spots = two
-    ? cb.w >= cb.h
+    ? ib.w >= ib.h
       ? [
-          new Pt(cu - cb.w * 0.22, cv),
-          new Pt(cu + cb.w * 0.22, cv),
+          new Pt(iu - ib.w * 0.2, iv),
+          new Pt(iu + ib.w * 0.2, iv),
         ]
       : [
-          new Pt(cu, cv - cb.h * 0.22),
-          new Pt(cu, cv + cb.h * 0.22),
+          new Pt(iu, iv - ib.h * 0.2),
+          new Pt(iu, iv + ib.h * 0.2),
         ]
-    : [new Pt(cu, cv)];
+    : [new Pt(iu, iv)];
 
   for (const q of spots) {
     const fp0 = rect(c.f, q.x - towerW / 2, q.x + towerW / 2, q.y - towerD / 2, q.y + towerD / 2);
-    const parts = intersect(toCCW(fp0), toCCW(court), 0.4);
+    const parts = intersect(toCCW(fp0), toCCW(inner), 0.4);
     if (parts.length === 0) continue;
     const fp = parts.reduce((x, y) => (Math.abs(area(x)) > Math.abs(area(y)) ? x : y));
     if (Math.abs(area(fp)) < 0.3) continue;
@@ -2540,8 +2548,10 @@ function towerPodium(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | 
       kind: st.kind,
       wall: st.wall,
       roof: st.roof,
-      hMin: st.hMin,
-      hMax: st.hMax,
+      // 三段式里的塔楼要比"一地块一栋"那套高出一档，否则只比裙房高一倍，
+      // 读起来是"大一号的裙房"而不是塔楼（商业 12~21 m → 21~38 m）
+      hMin: st.hMin * 1.8,
+      hMax: st.hMax * 1.8,
       low: false,
     });
   }
