@@ -139,6 +139,8 @@ const state: State = {
 let model: Model;
 let view2d: View2D;
 let view3d: View3D | null = null;
+/** 三维镜头已经聚焦过的地块键：同一个地块不重复推镜头 */
+let focusedPatchKey: string | null = null;
 let currentView: '2d' | '3d' = '2d';
 /** 当前在 2D 里点中的那条路（右栏"选中路"滑杆作用的对象） */
 let currentRoad: RoadPick | null = null;
@@ -215,6 +217,18 @@ let selectedPatchKey: string | null = null;
 function findPatchByKey(key: string): Patch | null {
   for (const p of model.patches) if (patchKey(p) === key) return p;
   return null;
+}
+
+/** 地块的平面中心（三维聚焦用；2D 的 y 就是三维的 z） */
+function patchCenter(p: Patch): { x: number; y: number } {
+  let sx = 0;
+  let sy = 0;
+  for (const q of p.shape) {
+    sx += q.x;
+    sy += q.y;
+  }
+  const n = Math.max(1, p.shape.length);
+  return { x: sx / n, y: sy / n };
 }
 
 /**
@@ -1286,6 +1300,17 @@ function switchView(view: '2d' | '3d'): void {
     view2d.setActive(false);
     if (!view3d) view3d = new View3D(mount);
     refresh3D();
+    // 平面里**选中过一块地**再切过来 → 镜头聚焦到那块地；
+    // 没选中（或选中的还是上一次已经聚焦过的）就完全不动相机 ——
+    // 来回切页签不该把用户转好的视角重置掉。
+    if (selectedPatchKey && selectedPatchKey !== focusedPatchKey) {
+      const p = findPatchByKey(selectedPatchKey);
+      if (p) {
+        const ctr = patchCenter(p);
+        view3d.focusOn(ctr.x, ctr.y);
+        focusedPatchKey = selectedPatchKey;
+      }
+    }
   } else {
     mount.classList.remove('on');
     canvas.style.display = 'block';

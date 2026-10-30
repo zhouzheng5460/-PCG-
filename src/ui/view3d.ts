@@ -10,6 +10,10 @@ export class View3D {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
+  /** 相机是否已经给过默认机位（重建场景时不再重置） */
+  private camReady = false;
+  /** 城市半径（聚焦时用来估算距离） */
+  private cityRadius = 100;
   private controls: OrbitControls;
   private group = new THREE.Group();
   private raf = 0;
@@ -134,12 +138,38 @@ export class View3D {
     disc.receiveShadow = true;
     this.group.add(disc);
 
-    this.controls.target.set(0, 0, 0);
-    const dist = radius * 2.6;
-    this.camera.position.set(dist * 0.62, dist * 0.72, dist * 0.78);
+    // 相机只在**第一次**建场景时定位。
+    //
+    // 原来每次 build（切页签、改任意参数都会重建）都把 target 拉回原点、
+    // 相机推回默认机位 —— 用户转好的视角一转眼就重置了。
+    // 现在只在 `camReady` 为假时给默认机位；之后重建只更新近远裁剪面。
+    this.cityRadius = radius;
+    if (!this.camReady) {
+      this.controls.target.set(0, 0, 0);
+      const dist = radius * 2.6;
+      this.camera.position.set(dist * 0.62, dist * 0.72, dist * 0.78);
+      this.camReady = true;
+    }
     this.camera.near = 1;
-    this.camera.far = radius * 40;
+    this.camera.far = Math.max(radius * 40, 1200);
     this.camera.updateProjectionMatrix();
+    this.controls.update();
+  }
+
+  /**
+   * 把镜头对准某个平面坐标（2D 的 x / y 就是三维的 x / z）。
+   *
+   * 只平移机位，不改变俯仰角 —— 用户在平面里点了一块地，切到三维就是想
+   * 从同一个角度看这块地，而不是被换成一个新的观察角度。
+   */
+  focusOn(x: number, y: number, span?: number): void {
+    const r = this.cityRadius || 100;
+    const d = span ?? Math.max(r * 0.55, 30);
+    const off = this.camera.position.clone().sub(this.controls.target);
+    const len = off.length() || d;
+    off.multiplyScalar(d / len);
+    this.controls.target.set(x, 0, y);
+    this.camera.position.set(x + off.x, Math.max(off.y, d * 0.35), y + off.z);
     this.controls.update();
   }
 

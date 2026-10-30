@@ -220,15 +220,19 @@ function addSolid(c: Ctx, name: string, ring: Pt[], h: number, wall: MatKey, roo
   if (ring.length < 3 || h <= 0.02) return;
   if (area(ring) < 1e-4) return;
   const g = gateSolid(ring, h, kind, Array.from(c.block));
-  c.res.solids.push({
-    name,
-    group: groupOf(c.use),
-    ring: toCCW(g.ring),
-    y0,
-    h: g.h,
-    wallMat: wall,
-    roofMat: roof,
-    kind: g.kind,
+  // 一个地块可能被拆成**多个规整体块**（见 gateSolid 的 ⓪b）：每个体块单独进场景，
+  // 名字加后缀，高度按 hScale 错落 —— 这就是"多个四边形立方体"的布局。
+  g.rings.forEach((r, i) => {
+    c.res.solids.push({
+      name: i === 0 ? name : `${name}_${i}`,
+      group: groupOf(c.use),
+      ring: toCCW(r),
+      y0,
+      h: g.h * (g.hScale?.[i] ?? 1),
+      wallMat: wall,
+      roofMat: roof,
+      kind: g.kind,
+    });
   });
 }
 
@@ -1823,7 +1827,9 @@ function planParcels(c: Ctx, targetA: number, depthMax = 2): boolean {
           pts: s.pts,
           w: u(top ? P.seamWideM : P.seamNarrowM),
           mat: 'asphalt' as MatKey,
-          y: 0.0126,
+          // 与城市道路同一层（road/system 的 Y_ROAD = 0.012）：
+          // 差一点点高度，光照与阴影就会不同，看起来就是"另一种黑"
+          y: 0.012,
           mark: top,
         };
       })
@@ -2243,8 +2249,8 @@ function gateSolid(
   h: number,
   kind: SolidKind,
   block?: Pt[]
-): { ring: Pt[]; h: number; kind: SolidKind } {
-  if (kind === 'canopy') return { ring, h, kind };
+): { rings: Pt[][]; h: number; kind: SolidKind; hScale?: number[] } {
+  if (kind === 'canopy') return { rings: [ring], h, kind };
   const minDepthU = MIN_DEPTH_M / 7;
   let out = ring;
   let fit = shapeFit(out);
@@ -2254,6 +2260,33 @@ function gateSolid(
   // 面积涨幅控制在 45% 以内：涨幅再大说明这块地本来就是楔形，
   // 扶正会明显压出红线，那就保持原样交给 ① 倒角。
   const rect = typeof process !== 'undefined' && process.env.NORECTIFY ? null : minAreaRect(out);
+
+  // ⓪b 不规则 / 过长 → 拆成**一串规整矩形**（用户："尽量用多个四边形立方体进行布局"）。
+  //
+  // 两块地方最需要这一步：
+  //   · 被禁建区 / 斜边地块切完之后剩下的三角形、多边形体量；
+  //   · 横跨整个街区的超长板楼（长 > 38 m），它本身就该断成几栋。
+  // 拆出来的每块都内接到自己的切片里，所以互不重叠、也不会压出红线。
+  const rectArea = rect ? Math.abs(area(rect)) : 0;
+  const rectish = !!rect && rectArea <= fit.area * 1.06;
+  const longSide = rect ? Pt.distance(rect[0], rect[1]) : 0;
+  const tooLong = longSide > u(38);
+  if (!rectish || tooLong) {
+    const parts = decomposeToRects(out, u(38), block);
+    if (parts.length >= 2) {
+      const sum = parts.reduce((a, r) => a + Math.abs(area(r)), 0);
+      if (sum > fit.area * 0.5) {
+        return {
+          rings: parts,
+          h,
+          kind,
+          // 每段高度错落一点点：一串等高方块读起来仍然是一整片枕头
+          hScale: parts.map((_, i) => 0.88 + ((i * 7) % 5) * 0.035),
+        };
+      }
+    }
+  }
+
   if (rect) {
     const ra = Math.abs(area(rect));
     if (ra > fit.area * 0.95) {
@@ -2280,12 +2313,192 @@ function gateSolid(
   // ② 进深还是不足 → 压成低层配套。高度上限按 1 层商业（≈7 m）给。
   if (fit.inradius < minDepthU) {
     // 连 3.2 m 都没有的碎条（地块角上的残渣）不盖楼：放上去只是根柱子。
-    if (fit.inradius * 7 < 3.2) return { ring: out, h: 0, kind };
+    if (fit.inradius * 7 < 3.2) return { rings: [out], h: 0, kind };
     const hCap = Math.min(h, 1.0);
     const kind2: SolidKind = kind === 'retail' || kind === 'podium' ? kind : 'retail';
-    return { ring: out, h: hCap, kind: kind2 };
+    return { rings: [out], h: hCap, kind: kind2 };
   }
-  return { ring: out, h, kind };
+  // 最后一档：扶正 / 拆分都没成，轮廓仍然明显不是矩形（外接矩形比它大 20% 以上）
+  // → **不盖楼**，这块地长草。用户口径："尽量不要有这种切割后形态"，
+  // 一个畸形体量比一块空地难看得多。
+  const last = minAreaRect(out);
+  if (last && Math.abs(area(last)) > Math.abs(area(out)) * 1.2) {
+    return { rings: [], h: 0, kind };
+  }
+
+  // 最后一道：轮廓短边不到 8 m 还想起高层 → 压成低层配套。
+  // 扶正 / 拆分都可能产出"又薄又高"的条子，这一道兜住所有路径
+  //（shape 测试的"没有纸片楼"断言盯的就是它）。
+  if (last && h > 1.0) {
+    const a1 = Pt.distance(last[0], last[1]);
+    const a2 = Pt.distance(last[1], last[2]);
+    if (Math.min(a1, a2) < u(8)) {
+      const kind2: SolidKind = kind === 'retail' || kind === 'podium' ? kind : 'retail';
+      return { rings: [out], h: 1.0, kind: kind2 };
+    }
+  }
+
+  return { rings: [out], h, kind };
+}
+
+/**
+ * 把不规则轮廓拆成**一串规整矩形**。
+ *
+ * 主轴取轮廓的最小外接矩形；沿主轴切成 n 段（每段 ≈ maxLen），
+ * 每段与轮廓求交 → 在切片里取内接矩形（`fitRectInBlock`）。
+ * 切片之间互不重叠，所以拆出来的矩形也不会打架。
+ */
+function decomposeToRects(ring: Pt[], maxLenU: number, block?: Pt[]): Pt[][] {
+  const box = minAreaRect(ring);
+  if (!box) return [];
+  const L = Pt.distance(box[0], box[1]);
+  const W = Pt.distance(box[1], box[2]);
+  if (L < u(12) || W < u(6)) return [];
+  const ux = (box[1].x - box[0].x) / L;
+  const uy = (box[1].y - box[0].y) / L;
+  const vx = (box[3].x - box[0].x) / W;
+  const vy = (box[3].y - box[0].y) / W;
+  const at = (s: number, t: number) => new Pt(box[0].x + ux * s + vx * t, box[0].y + uy * s + vy * t);
+
+  // 段数：按"每段不超过 maxLenU"来，最多 4 段（再多就全是碎块了）
+  const n = Math.max(2, Math.min(4, Math.ceil(L / maxLenU)));
+  const out: Pt[][] = [];
+  for (let i = 0; i < n; i++) {
+    const s0 = (L * i) / n;
+    const s1 = (L * (i + 1)) / n;
+    const strip = [at(s0, 0), at(s1, 0), at(s1, W), at(s0, W)];
+    const parts = intersect(toCCW(strip), toCCW(ring), 0.08);
+    if (parts.length === 0) continue;
+    const slice = parts.reduce((a, b) => (Math.abs(area(a)) > Math.abs(area(b)) ? a : b));
+    const sliceA = Math.abs(area(slice));
+    if (sliceA < 0.2) continue;
+    const r0 = minAreaRect(slice);
+    if (!r0) continue;
+    const fitted = block && block.length >= 3 ? fitRectInBlock(r0, slice) : r0;
+    const fr = fitted ?? r0;
+    const fa = Math.abs(area(fr));
+    // 内接后还要占住切片的一半，否则这一块就是一根柱子，不如空着长草
+    if (fa < sliceA * 0.5 || fa < 0.2) continue;
+    // 进深不足 8 m 的条子不盖楼：拆出来的块如果又薄又高就是"纸片楼"，
+    // 换了形状也还是难看。这里用和 shape 测试同一口径的 inradius（2A/P），
+    // 不是外接矩形的短边 —— 二者对斜条子差别很大。
+    if (shapeFit(fr).inradius < u(8)) continue;
+    out.push(fr);
+  }
+  return out;
+}
+
+/**
+ * 商业 / 商务 / 市政地块的**「塔楼 + 连续裙房 + 内院」**三段式。
+ *
+ * 参考图（Grasshopper 那组商业街区）的读法是：
+ *   · 沿地块四边一条**连续的低层裙房带**（商业界面，围合成"口"或"U"）；
+ *   · 裙房围出来的**内院**是铺装广场 + 中心绿地；
+ *   · 塔楼坐在内院里，1~2 栋，沿地块主轴居中排。
+ *
+ * 实现顺序：内缩出"环路"→ 逐边生成裙房梯形（留 1~2 条边做出入口）→
+ * 内院铺装与绿地 → 内院里放塔楼。
+ * 排不出来（地块太小 / 形状太碎）就返回 null，退回原来的"一地块一栋"。
+ */
+function towerPodium(c: Ctx, ring: Pt[], A: number, st: ParcelStyle): Brick[] | null {
+  if (c.use !== 'cbd' && c.use !== 'commercial' && c.use !== 'civic') return null;
+  const BP = c.model.params.building;
+  if (BP.podiumDepthM < 4) return null;
+
+  const inner = insetRing(ring, u(4.5));
+  if (inner.length < 3) return null;
+  if (Math.abs(area(inner)) < 12) return null;
+  // 裙房进深自适应：最多吃掉短边的 28%（每侧），否则小地块里内院会被挤没
+  const gbi = bboxOf(inner, c.f);
+  const shortSide = Math.min(gbi.w, gbi.h);
+  const depth = Math.min(u(BP.podiumDepthM), shortSide * 0.28);
+  if (depth < u(4)) return null;
+  const court = insetRing(inner, depth);
+  if (court.length < 3) return null;
+  const courtA = Math.abs(area(court));
+  if (courtA < 2.5) return null;
+
+  const out: Brick[] = [];
+  const n = inner.length;
+  // 留出 1~2 条最长边当出入口 / 开口（临街主面不摆裙房）
+  const gapCount = n > 4 ? 2 : 1;
+  const order = Array.from({ length: n }, (_, i) => i).sort(
+    (a, b) =>
+      Pt.distance(inner[b], inner[(b + 1) % n]) - Pt.distance(inner[a], inner[(a + 1) % n])
+  );
+  const skip = new Set(order.slice(0, gapCount));
+
+  for (let i = 0; i < n; i++) {
+    if (skip.has(i)) continue;
+    const a = inner[i];
+    const b = inner[(i + 1) % n];
+    const a2 = court[i];
+    const b2 = court[(i + 1) % n];
+    if (!a2 || !b2) continue;
+    const quad = [a, b, b2, a2];
+    if (!isSimpleRing(quad)) continue;
+    const parts = intersect(toCCW(quad), toCCW(ring), 0.3);
+    if (parts.length === 0) continue;
+    const fp = parts.reduce((x, y) => (Math.abs(area(x)) > Math.abs(area(y)) ? x : y));
+    if (Math.abs(area(fp)) < 0.3) continue;
+    out.push({
+      fp,
+      kind: 'podium',
+      wall: c.use === 'civic' ? 'wallStone' : 'wallGlass',
+      roof: 'roofLight',
+      hMin: BP.podiumHMin,
+      hMax: BP.podiumHMax,
+      low: false,
+    });
+  }
+  if (out.length < 2) return null;
+
+  // 内院：铺装广场 + 中心一块绿地
+  addSurface(c, 'court_pave', court, 'stonePave', 0.013, false);
+  const cb = bboxOf(court, c.f);
+  const cu = (cb.u0 + cb.u1) / 2;
+  const cv = (cb.v0 + cb.v1) / 2;
+  const gw = cb.w * 0.32;
+  const gd = cb.h * 0.32;
+  for (const g of intersect(toCCW(rect(c.f, cu - gw / 2, cu + gw / 2, cv - gd / 2, cv + gd / 2)), toCCW(court), 0.4)) {
+    if (Math.abs(area(g)) > 0.25) addSurface(c, 'court_green', g, 'grass', 0.0134, false);
+  }
+
+  // 塔楼：内院里 1~2 栋，沿地块主轴居中
+  const towerW = clamp(cb.w * 0.56, u(12), u(34));
+  const towerD = clamp(cb.h * 0.56, u(12), u(34));
+  const two = courtA > 20 && BP.maxPerParcel >= 2;
+  const spots = two
+    ? cb.w >= cb.h
+      ? [
+          new Pt(cu - cb.w * 0.22, cv),
+          new Pt(cu + cb.w * 0.22, cv),
+        ]
+      : [
+          new Pt(cu, cv - cb.h * 0.22),
+          new Pt(cu, cv + cb.h * 0.22),
+        ]
+    : [new Pt(cu, cv)];
+
+  for (const q of spots) {
+    const fp0 = rect(c.f, q.x - towerW / 2, q.x + towerW / 2, q.y - towerD / 2, q.y + towerD / 2);
+    const parts = intersect(toCCW(fp0), toCCW(court), 0.4);
+    if (parts.length === 0) continue;
+    const fp = parts.reduce((x, y) => (Math.abs(area(x)) > Math.abs(area(y)) ? x : y));
+    if (Math.abs(area(fp)) < 0.3) continue;
+    if (!fitsKind(fp, st.kind, MIN_DEPTH_M / 7)) continue;
+    out.push({
+      fp,
+      kind: st.kind,
+      wall: st.wall,
+      roof: st.roof,
+      hMin: st.hMin,
+      hMax: st.hMax,
+      low: false,
+    });
+  }
+
+  return out.length >= 2 ? out : null;
 }
 
 /**
@@ -2393,7 +2606,8 @@ function planParcel(c: Ctx) {
   const st = PARCEL_STYLE[c.use] ?? PARCEL_STYLE.residential;
   // 先试"一个地块排多栋平行板楼"（参考图里的住宅组团做法）；
   // 排不出来（地块太窄 / 形状太怪）再退回原来的一地块一栋。
-  const bricks = rowLayout(c, ring, A, st) ?? bricksFor(ring, A, st, c.use);
+  const bricks =
+    towerPodium(c, ring, A, st) ?? rowLayout(c, ring, A, st) ?? bricksFor(ring, A, st, c.use);
 
   if (bricks.length === 0) {
     if (typeof process !== 'undefined' && process.env.PARCEL_DEBUG && process.env.PARCEL_VERBOSE) {
@@ -3483,6 +3697,63 @@ function tensorPartition(
  * 巷道的端点是子街坊的边界，也就是一层内部路的**路边**，
  * 所以不会盖到沥青上去，不必担心 0.0128 > 0.0125 这件事。
  */
+/**
+ * 铺一段折线带（**整条一次成形**）。
+ *
+ * 用户核对意见："内部路的颜色统一，最好也和路网一样，统一生成，
+ * 不要这样拼凑在一起" —— 原来是**逐段**各画一条矩形，段与段之间留着
+ * 抗锯齿的缝，俯视图上一段一段像拼贴；而且每段独立着色，光照略有差别。
+ * 现在整条折线一次生成一个多边形，颜色与接缝都跟城市道路一致。
+ */
+function bandPolygon(pts: Pt[], w: number): Pt[] | null {
+  if (pts.length < 2) return null;
+  const hw = w / 2;
+  const left: Pt[] = [];
+  const right: Pt[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    // 每个点取前后两段法线的平均（拐角处用斜接，避免出现缺口）
+    const prev = pts[i - 1] ?? pts[i];
+    const next = pts[i + 1] ?? pts[i];
+    let nx = 0;
+    let ny = 0;
+    const segs: [Pt, Pt][] = [];
+    if (i > 0) segs.push([prev, pts[i]]);
+    if (i + 1 < pts.length) segs.push([pts[i], next]);
+    for (const [a, b] of segs) {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const L = Math.hypot(dx, dy);
+      if (L < 1e-9) continue;
+      nx += -dy / L;
+      ny += dx / L;
+    }
+    const nl = Math.hypot(nx, ny);
+    if (nl < 1e-9) continue;
+    nx /= nl;
+    ny /= nl;
+    // 斜接补偿：法线夹角越大，偏移要按 1/cos 放大
+    const prevN = i > 0 ? norm(pts[i - 1], pts[i]) : null;
+    const nextN = i + 1 < pts.length ? norm(pts[i], pts[i + 1]) : null;
+    let scale = 1;
+    if (prevN && nextN) {
+      const dot = Math.max(-1, Math.min(1, prevN.x * nextN.x + prevN.y * nextN.y));
+      const cosHalf = Math.sqrt((1 + dot) / 2);
+      scale = cosHalf > 0.35 ? 1 / cosHalf : 2.8;
+    }
+    left.push(new Pt(pts[i].x + nx * hw * scale, pts[i].y + ny * hw * scale));
+    right.push(new Pt(pts[i].x - nx * hw * scale, pts[i].y - ny * hw * scale));
+  }
+  if (left.length < 2) return null;
+  return [...left, ...right.reverse()];
+}
+
+function norm(a: Pt, b: Pt): Pt {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const L = Math.hypot(dx, dy) || 1;
+  return new Pt(dx / L, dy / L);
+}
+
 function drawSeams(
   c: Ctx,
   lanes: { pts: Pt[]; w: number; mat: MatKey; y: number; mark?: boolean }[]
@@ -3490,12 +3761,19 @@ function drawSeams(
   const ring = Array.from(c.block);
   for (const ln of lanes) {
     const pts = clipPath(ln.pts, ring);
-    for (let i = 0; i + 1 < pts.length; i++) {
-      const s = stripe(pts[i], pts[i + 1], ln.w);
-      if (!s) continue;
-      addSurface(c, 'zone_alley', s, ln.mat, ln.y, false);
-      // 沥青路加中心虚线：路面读起来才是"路"，而不是一条灰缝
-      if (ln.mark) addCenterDash(c, pts[i], pts[i + 1], ln.y);
+    if (pts.length < 2) continue;
+    const band = bandPolygon(pts, ln.w);
+    if (band && simpleRing(band)) {
+      addSurface(c, 'zone_alley', band, ln.mat, ln.y, false);
+    } else {
+      // 退化（折线自交 / 极短）时退回逐段：宁可分段，也不要出现破面
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const s = stripe(pts[i], pts[i + 1], ln.w);
+        if (s) addSurface(c, 'zone_alley', s, ln.mat, ln.y, false);
+      }
+    }
+    if (ln.mark) {
+      for (let i = 0; i + 1 < pts.length; i++) addCenterDash(c, pts[i], pts[i + 1], ln.y);
     }
   }
 }
@@ -5300,7 +5578,10 @@ export function buildLot(model: Model, patch: Patch, use: LandUse, radius: numbe
   // "一个街区摆一片楼群"的构图会把地块边界吃掉。
   const BP = ctx.model.params.block;
   if (BP.parcelize && PARCEL_USES.has(use)) {
-    const pitch = u(BP.parcelPitchM);
+    // 商业 / 商务 / 市政要跑"塔楼 + 裙房 + 内院"三段式，地块得比住宅大一圈 ——
+    // 46 m 的地块减掉退线与裙房进深，内院只剩 11 m，塔楼根本放不下。
+    const PITCH_K: Partial<Record<LandUse, number>> = { cbd: 1.5, commercial: 1.45, civic: 1.4 };
+    const pitch = u(BP.parcelPitchM * (PITCH_K[use] ?? 1));
     // 单块地块可以被单独调"切成几块"：面板给的是目标面积，这里直接用它，
     // 没给就跟全局「小地块边长」走。下限 2 u²（≈100 m²）挡住切成碎渣。
     const ov = ctx.patch.override?.parcelTargetA;

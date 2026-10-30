@@ -139,6 +139,13 @@ export interface BuildingParams {
    */
   spacingM: number;
   /**
+   * 连续裙房的进深，米（0 = 不生成裙房）。
+   *
+   * 商业 / 商务 / 市政地块的"塔楼 + 裙房 + 内院"三段式里，裙房是沿地块四边
+   * 围合的低层带（商业界面），厚度就是这个数。设 0 就退回"一栋楼居中"。
+   */
+  podiumDepthM: number;
+  /**
    * 一个地块最多排几栋楼。
    *
    * 1 = 回到旧口径（一个地块一栋楼）；2~4 才是参考图里的"多栋平行板楼 + 内院"。
@@ -225,6 +232,7 @@ export function defaultParams(): TownParams {
       // 楼间距 14 m、每地块最多 3 栋 —— 参考图（住宅）里是"多栋平行板楼 + 内院"，
       // 2 栋是下限，3 栋以上要地块短边够大才排得下。
       spacingM: 12,
+      podiumDepthM: 14,
       maxPerParcel: 3,
     },
     green: {
@@ -268,6 +276,8 @@ const LIMITS: Record<string, [number, number]> = {
   // 上限 30 m：再宽一个院子就够再塞一栋了。
   'building.spacingM': [6, 30],
   'building.maxPerParcel': [1, 4],
+  // 裙房进深 0~30 m：0 关掉，14 是"能放两排店面 + 一条内廊"的常见值
+  'building.podiumDepthM': [0, 30],
   'block.loopW': [3.5, 9],
   // 下限 3：绿带窄于 3 m 时，环路和城市路的人行道只隔一条硬质带，
   // 空中看就是一条 15 m 宽的宽路 —— 那正是环路要解决的问题，所以不给 0。
@@ -431,6 +441,15 @@ export const BUILDING_SPECS: ParamSpec[] = [
   { key: 'towerHMaxCore', label: '塔楼最高（中心）', unit: '单位', step: 0.5, ...lim('building.towerHMaxCore'), topic: 'building' },
   { key: 'spacingM', label: '楼栋间距', unit: 'm', step: 1, ...lim('building.spacingM'), topic: 'building' },
   { key: 'maxPerParcel', label: '每地块楼栋上限', unit: '栋', step: 1, ...lim('building.maxPerParcel'), topic: 'building' },
+  {
+    key: 'podiumDepthM',
+    label: '连续裙房进深',
+    unit: 'm',
+    step: 1,
+    ...lim('building.podiumDepthM'),
+    topic: 'building',
+    hint: '商业 / 商务 / 市政地块的裙房围边厚度；设 0 = 不生成裙房',
+  },
 ];
 
 /** 一个参数属于哪个参数对象（block / building），UI 提交时要用它定位 */
