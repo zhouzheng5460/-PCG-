@@ -8,6 +8,7 @@
 // a_bot → b_top → b_bot。
 
 import earcut from 'earcut';
+import polygonClipping from 'polygon-clipping';
 import { Pt } from '../core/geom';
 
 export interface Primitive {
@@ -65,6 +66,61 @@ function dedupeRing(ring: Pt[]): Pt[] {
 }
 
 /** 贴地平面多边形 */
+/**
+ * 环是否自交（O(n²)，n 一般 < 12，代价可以忽略）。
+ *
+ * 自交环交给 earcut 会吐出**跨到多边形外的三角形** —— 俯视图和三维里
+ * 就是地面上伸出去的细长"尖刺"。这跟相机近平面裁剪无关：正交俯视、
+ * 透视视图里都长一样，因为它本来就是几何错误。
+ */
+function selfIntersects(r: Pt[]): boolean {
+  const n = r.length;
+  if (n < 4) return false;
+  for (let i = 0; i < n; i++) {
+    const a = r[i];
+    const b = r[(i + 1) % n];
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      const c = r[j];
+      const d = r[(j + 1) % n];
+      const d1 = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      const d2 = (b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x);
+      const d3 = (d.x - c.x) * (a.y - c.y) - (d.y - c.y) * (a.x - c.x);
+      const d4 = (d.x - c.x) * (b.y - c.y) - (d.y - c.y) * (b.x - c.x);
+      if (d1 * d2 < 0 && d3 * d4 < 0) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 自交环 → 用布尔并集规范化成简单环（可能返回多块，取最大的）。
+ * 布尔库对单个自交环做 union 等价于"抹掉自交形成的重叠区"，结果边数可能变化。
+ */
+function healRing(r: Pt[]): Pt[] | null {
+  try {
+    const res = polygonClipping.union([r.map((p) => [p.x, p.y])] as never) as unknown as number[][][][];
+    let best: Pt[] | null = null;
+    let bestA = 0;
+    for (const poly of res) {
+      const ring = poly[0];
+      if (!ring) continue;
+      const pts = ring.map((q) => new Pt(q[0], q[1]));
+      const a = Math.abs(pts.reduce((acc, p, i) => {
+        const n2 = pts[(i + 1) % pts.length];
+        return acc + p.x * n2.y - n2.x * p.y;
+      }, 0) / 2);
+      if (a > bestA) {
+        bestA = a;
+        best = pts;
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
 export function flatPolygon(
   ring: Pt[],
   y: number,
@@ -72,8 +128,15 @@ export function flatPolygon(
   group: string,
   color: [number, number, number]
 ): Primitive | null {
-  const clean = ensureCCW(dedupeRing(ring));
+  let clean = ensureCCW(dedupeRing(ring));
   if (clean.length < 3) return null;
+  // 自交兜底：earcut 对自交环会吐出跨到多边形外的三角形（地面上的"尖刺"）
+  if (selfIntersects(clean)) {
+    const healed = healRing(clean);
+    if (!healed) return null;
+    clean = ensureCCW(dedupeRing(healed));
+    if (clean.length < 3 || selfIntersects(clean)) return null;
+  }
   const idx = triangulate(clean);
   if (idx.length === 0) return null;
 

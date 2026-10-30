@@ -40,15 +40,31 @@ export function buildTownMeshes(model: Model, opts: Build3DOptions = {}): Primit
 
   const vis = opts.layers ?? (() => true);
 
+  /**
+   * 几何合法性兜底：任何一个环里出现 NaN / 无穷大 / 离谱坐标，
+   * 三角化出来的就是一根本扎穿整个场景的"尖刺"三角形。
+   * 这些环来自布尔运算的退化分支，源头难堵全，所以在导出前统一拦掉。
+   */
+  const cityR = (model.cityRadius || 100) * 3;
+  const saneRing = (ring: { x: number; y: number }[]): boolean => {
+    for (const p of ring) {
+      if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return false;
+      if (Math.abs(p.x) > cityR || Math.abs(p.y) > cityR) return false;
+    }
+    return true;
+  };
+
   // 贴地要素：铺装、路面、标线、车位线
   for (const s of scene.surfaces) {
     if (!vis(layerOfSurface(s))) continue;
+    if (!saneRing(s.ring)) continue;
     addFlat(flatPolygon(s.ring, s.y, s.name, s.group, MAT[s.mat]));
   }
 
   // 建筑与围墙体块
   for (const s of scene.solids) {
     if (!vis(layerOfSolid(s))) continue;
+    if (!saneRing(s.ring)) continue;
     out.push(...extrudeSolid(s.ring, s.y0, s.h, s.name, s.group, MAT[s.roofMat], MAT[s.wallMat]));
   }
 

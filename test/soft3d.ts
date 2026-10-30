@@ -69,12 +69,11 @@ export function renderPrimitives(prims: Primitive[], opts: RenderOptions = {}): 
     const { positions, normals, indices, color } = prim;
     for (let t = 0; t < indices.length; t += 3) {
       const ia = indices[t] * 3, ib = indices[t + 1] * 3, ic = indices[t + 2] * 3;
-      if (win) {
-        // 三角形质心在窗口外就整块跳过 —— 局部特写用
-        const mx = (positions[ia] + positions[ib] + positions[ic]) / 3;
-        const mz = (positions[ia + 2] + positions[ib + 2] + positions[ic + 2]) / 3;
-        if (mx < win.minX || mx > win.maxX || mz < win.minZ || mz > win.maxZ) continue;
-      }
+      // 注意：**不要**按三角形质心丢弃窗口外的三角形。
+      // 一块铺装是一个大三角形扇，质心在窗口内、两个顶点远在窗口外时，
+      // 被"部分保留"的三角形会从街区边缘伸出一根楔形 —— 视觉上就是
+      // 地面上那些莫名其妙的"尖刺"。窗口只用来**取景**，画布本身会把
+      // 画外的像素夹掉，所以这里不做任何剔除。
       const A = project(positions[ia], positions[ia + 1], positions[ia + 2]);
       const B = project(positions[ib], positions[ib + 1], positions[ib + 2]);
       const C = project(positions[ic], positions[ic + 1], positions[ic + 2]);

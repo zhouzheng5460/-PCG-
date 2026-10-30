@@ -146,6 +146,13 @@ export interface BuildingParams {
    */
   podiumDepthM: number;
   /**
+   * 用"塔楼 + 连续裙房 + 内院"三段式的概率（0~1）。
+   *
+   * 用户口径：三分式只当**样式选项**随机用一点，不做全城主调 ——
+   * 原来 85% 还是原来的"一地块一栋 / 多栋板楼"，15% 才起裙房。
+   */
+  podiumChance: number;
+  /**
    * 一个地块最多排几栋楼。
    *
    * 1 = 回到旧口径（一个地块一栋楼）；2~4 才是参考图里的"多栋平行板楼 + 内院"。
@@ -233,6 +240,7 @@ export function defaultParams(): TownParams {
       // 2 栋是下限，3 栋以上要地块短边够大才排得下。
       spacingM: 12,
       podiumDepthM: 14,
+      podiumChance: 0.15,
       maxPerParcel: 3,
     },
     green: {
@@ -278,6 +286,7 @@ const LIMITS: Record<string, [number, number]> = {
   'building.maxPerParcel': [1, 4],
   // 裙房进深 0~30 m：0 关掉，14 是"能放两排店面 + 一条内廊"的常见值
   'building.podiumDepthM': [0, 30],
+  'building.podiumChance': [0, 1],
   'block.loopW': [3.5, 9],
   // 下限 3：绿带窄于 3 m 时，环路和城市路的人行道只隔一条硬质带，
   // 空中看就是一条 15 m 宽的宽路 —— 那正是环路要解决的问题，所以不给 0。
@@ -449,6 +458,14 @@ export const BUILDING_SPECS: ParamSpec[] = [
     ...lim('building.podiumDepthM'),
     topic: 'building',
     hint: '商业 / 商务 / 市政地块的裙房围边厚度；设 0 = 不生成裙房',
+  },
+  {
+    key: 'podiumChance',
+    label: '裙房样式占比',
+    step: 0.01,
+    ...lim('building.podiumChance'),
+    topic: 'building',
+    hint: '随机用"塔楼 + 裙房 + 内院"的比例（默认 0.15 = 15%）',
   },
 ];
 

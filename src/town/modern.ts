@@ -180,6 +180,46 @@ function simpleRing(ring: Pt[]): boolean {
   return true;
 }
 
+/**
+ * 折线 / 环的 RDP 简化：去掉近共线的中间点。
+ *
+ * 布尔运算的结果里经常出现"两条几乎重合的边 + 中间几个几乎共线的点"，
+ * 这些点本身无害，但三角化时会退化成针状三角形 —— 俯视图上是地面上一根细刺。
+ */
+function simplifyRingRDP(ring: Pt[], eps: number): Pt[] {
+  const n = ring.length;
+  if (n <= 4) return ring;
+  const keep = new Uint8Array(n);
+  keep[0] = 1;
+  keep[n - 1] = 1;
+  const stack: [number, number][] = [[0, n - 1]];
+  while (stack.length > 0) {
+    const [i0, i1] = stack.pop()!;
+    let maxD = 0;
+    let idx = -1;
+    const a = ring[i0];
+    const b = ring[i1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const L = Math.hypot(dx, dy) || 1;
+    for (let i = i0 + 1; i < i1; i++) {
+      const p = ring[i];
+      const d = Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / L;
+      if (d > maxD) {
+        maxD = d;
+        idx = i;
+      }
+    }
+    if (idx >= 0 && maxD > eps) {
+      keep[idx] = 1;
+      stack.push([i0, idx], [idx, i1]);
+    }
+  }
+  const out: Pt[] = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(ring[i]);
+  return out;
+}
+
 function addSurface(c: Ctx, name: string, ring: Pt[], mat: MatKey, y: number, clip = true) {
   let r = ring;
   if (clip) {
@@ -189,7 +229,15 @@ function addSurface(c: Ctx, name: string, ring: Pt[], mat: MatKey, y: number, cl
   }
   if (r.length < 3) return;
   if (area(r) < 1e-4) return;
+  // 布尔运算在斜边上会吐出"退化的极短边 + 近共线点"，earcut 三角化时
+  // 这些点会拉出细长的尖刺三角形（俯视 / 三维里都是明显的地面穿帮）。
+  // 所以在**唯一出口**先做一次 RDP 简化，再判自交与纤薄度。
+  r = simplifyRingRDP(r, 0.035);
+  if (r.length < 3) return;
   if (!simpleRing(r)) return;
+  // 细长碎片（面积不到外接矩形 12%）不铺：它们就是尖刺的来源
+  const box = minAreaRect(r);
+  if (box && Math.abs(area(r)) < Math.abs(area(box)) * 0.12) return;
   // 停车坪被地块裁完之后只剩几平米：一个车位都排不下（≈13 m²/车位），
   // 画出来就是沥青上一块小脏斑，不如不画。
   if (name.startsWith('parking_') && Math.abs(area(r)) < 0.28) return;
@@ -2606,8 +2654,14 @@ function planParcel(c: Ctx) {
   const st = PARCEL_STYLE[c.use] ?? PARCEL_STYLE.residential;
   // 先试"一个地块排多栋平行板楼"（参考图里的住宅组团做法）；
   // 排不出来（地块太窄 / 形状太怪）再退回原来的一地块一栋。
+  // 三段式只是**样式选项**：按 `podiumChance` 随机抽，抽中才起裙房 + 内院，
+  // 其余地块照旧（住宅排多栋板楼、其余一地块一栋）。用户口径 85% 原样式 / 15% 裙房。
+  const BP = c.model.params.building;
+  const wantPodium = c.use !== 'residential' && Rng.bool(BP.podiumChance);
   const bricks =
-    towerPodium(c, ring, A, st) ?? rowLayout(c, ring, A, st) ?? bricksFor(ring, A, st, c.use);
+    (wantPodium ? towerPodium(c, ring, A, st) : null) ??
+    rowLayout(c, ring, A, st) ??
+    bricksFor(ring, A, st, c.use);
 
   if (bricks.length === 0) {
     if (typeof process !== 'undefined' && process.env.PARCEL_DEBUG && process.env.PARCEL_VERBOSE) {
