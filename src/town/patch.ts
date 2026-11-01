@@ -6,6 +6,7 @@ import type { Region } from '../core/voronoi';
 import type { LandUse } from '../scene/types';
 import type { Ward } from './wards';
 import type { ZonePurpose } from './zones';
+import type { ParcelPattern } from './params';
 
 /**
  * 用户对单个地块的手动覆盖。
@@ -24,6 +25,14 @@ export interface PatchEdit {
   heightK?: number;
   /** 这个地块的切分目标面积（世界单位²）；不给就跟着全局「小地块边长」走 */
   parcelTargetA?: number;
+  /**
+   * 这一块**指定**用哪种切分模式；不给就按全局「切分模式比重」抽。
+   *
+   * 全局比重管的是"整座城的肌理配比"，但总有那么一两块地读起来不对：
+   * 沿主干道那块该切成排屋，斜街对面那块该顺着张量场转。单块指定就是
+   * 为这一种需求留的通道 —— 也是唯一能"点一下就看到某种模式长什么样"的办法。
+   */
+  pattern?: ParcelPattern;
 }
 
 export class Patch {
@@ -36,6 +45,14 @@ export class Patch {
   purpose?: ZonePurpose;
   /** 用户手动覆盖（见 PatchEdit） */
   override?: PatchEdit;
+  /**
+   * 本次生成**实际**用到的切分模式（抽签的结果，或用户指定的那个）。
+   *
+   * 只给面板读：全局比重是"抽签"，用户点中一块地想确认"这块到底切成了什么样"，
+   * 光看画面得对着五种肌理猜。留一个字段比在 UI 里重跑一遍抽签可靠 ——
+   * 重跑要复用同一条随机流，稍有偏差就是"面板报的和画面不是一回事"。
+   */
+  usedPattern?: ParcelPattern;
 
   constructor(vertices: Pt[]) {
     this.shape = new Polygon(vertices);

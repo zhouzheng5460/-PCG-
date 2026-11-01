@@ -94,6 +94,13 @@ export interface PropFeature {
   rot: number;
   /** 尺寸倍率 */
   scale: number;
+  /**
+   * **仅高度**的额外倍率（默认 1）。
+   *
+   * 绿篱这类构件平面尺寸和高度必须分开调：想让它长到和栏杆齐平（1.1 m）
+   * 又不能变宽，等比缩放在几何上做不到 —— 一放就宽 2.4 倍。
+   */
+  hz?: number;
   /** 是否随机翻转，让树冠不整齐 */
   seed: number;
 }

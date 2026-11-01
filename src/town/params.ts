@@ -15,6 +15,85 @@ export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
+/**
+ * 地块切分模式。
+ *
+ *   · ortho 正交网格：按「沿街面宽 × 进深」切成网格，每块都有临街边（城市的底子）
+ *   · diag  斜切：相对街区主轴偏 45° 起刀（斜向街坊）
+ *   · free  自由：每刀 ±20° 抖动，出现楔形 / 不规则地块
+ *   · field 跟随街区：刀锋跟着**街区自身最长的那条边**走，
+ *           斜街区 / 变形街区里地块边界不会跟街道打架
+ *
+ * 已移除的两个模式（用户核对意见）：
+ *   · `strip` 平行条带 —— 同向连切只会切出"一条贯通全街区的窄条"，
+ *     进深动辄 60~90 m，退线后就是一栋超长的薄楼，这是错的。真实地块
+ *     的窄边是**沿街面宽**，另一向必须按进深限制再切一刀（现在 ortho 就是这么做的）。
+ *   · `field` 旧版"每刀重采样城市张量场" —— 地块边界跟着场转，可场在街区
+ *     内部是虚的（X 型退化节点），采出来的方向常与街区四边斜交，
+ *     于是内部巷道斜穿街区、建筑也被掰成斜的平行四边形。现在 `field`
+ *     不再采样场，只取"街区最长边"这一个稳定的方向。
+ *
+ * 定义放在这里（而不是 modern.ts）是因为三处都要用它：
+ * 参数面板按比重分配、选中地块单块指定、链接快照序列化。
+ */
+export type ParcelPattern = 'ortho' | 'diag' | 'free' | 'field';
+
+/** 四种模式的权重。**相对值**：全 0 时退回 ortho */
+export type ParcelPatternWeights = Record<ParcelPattern, number>;
+
+/**
+ * 模式的展示元信息（面板 / 图例共用）。
+ *
+ * `desc` 不是装饰：几种切法在空中读起来差别没那么大，用户调完滑杆不知道
+ * 自己看的是什么，所以每条都得说清"这个模式切出来长什么样"。
+ */
+export const PARCEL_PATTERN_META: { key: ParcelPattern; label: string; desc: string }[] = [
+  { key: 'ortho', label: '正交网格', desc: '严格沿街区主轴等分，尺规方格' },
+  { key: 'field', label: '跟随街区', desc: '沿主轴但切点抖动，进深更浅，肌理碎' },
+  { key: 'diag', label: '斜切', desc: '相对街区主轴偏 45° 起刀' },
+  { key: 'free', label: '自由', desc: '切点抖动 ±30°，不规则地块' },
+];
+
+/** 默认比重：正交占底子，斜切与跟随街区各一份，剩一点给不规则 */
+export const DEFAULT_PARCEL_PATTERNS: ParcelPatternWeights = {
+  ortho: 0.46,
+  diag: 0.18,
+  free: 0.12,
+  field: 0.24,
+};
+
+/** 是不是一个合法的切分模式（解析分享链接时用，坏值一律忽略而不是崩） */
+export function isParcelPattern(v: unknown): v is ParcelPattern {
+  return typeof v === 'string' && PARCEL_PATTERN_META.some((m) => m.key === v);
+}
+
+/**
+ * 比重数组归一化后的百分比（整数，和恒为 100）。
+ *
+ * 面板要显示"实际会按这个比例分配"，而权重本身是相对值 —— 用户把正交拖到
+ * 0.5 时，真正读的是"占四成"还是"占八成"。全 0 时退回 ortho 100%。
+ */
+export function patternPercents(w: ParcelPatternWeights): Record<ParcelPattern, number> {
+  const keys = PARCEL_PATTERN_META.map((m) => m.key);
+  const total = keys.reduce((s, k) => s + Math.max(0, w[k] ?? 0), 0);
+  if (!(total > 0)) return { ortho: 100, diag: 0, free: 0, field: 0 };
+  // 先按比例取整，再把差额补给最大的一项 —— 避免 33/33/33 这种和不等于 100
+  const raw = keys.map((k) => (Math.max(0, w[k] ?? 0) / total) * 100);
+  const out = raw.map((v) => Math.floor(v));
+  let rest = 100 - out.reduce((s, v) => s + v, 0);
+  const order = raw.map((v, i) => [v - Math.floor(v), i] as [number, number]).sort((a, b) => b[0] - a[0]);
+  for (const [, i] of order) {
+    if (rest <= 0) break;
+    out[i]++;
+    rest--;
+  }
+  const res: Record<ParcelPattern, number> = { ortho: 0, diag: 0, free: 0, field: 0 };
+  keys.forEach((k, i) => {
+    res[k] = out[i];
+  });
+  return res;
+}
+
 /** 街坊 / 地块（parcel）形态 —— 决定"楼和楼之间留多少空" */
 export interface BlockParams {
   /** 一个开发单元（一栋楼）的边长，米。调小 → 楼更碎、栋数更多 */
@@ -36,15 +115,33 @@ export interface BlockParams {
    */
   parcelize: boolean;
   /**
-   * 小地块的目标边长，米。调小 → 地块更碎、楼更小更多。
+   * 小地块的**沿街面宽**，米。调小 → 地块更窄、沿街切得更碎。
    *
-   * 这个数直接决定"一个街区几栋楼"：街区中位面积 112 单位²（≈74 m 见方），
-   * 30 m 对应 4 个地块 = 一个街区 4 栋楼（参考图里是 3~6 栋）。
-   * 再小（18 m）会切出 12 块，每块 18×18 m，退线完连院子都放不下。
+   * 这是决定"沿街切几块"的唯一参数：切分先按面宽在沿街方向排布，
+   * 进深超过 `PARCEL_DEPTH_M` 时再横切一刀。地块面积于是变成
+   * 「面宽 × 进深」的结果，而不是一个被反推出来的面积目标。
+   *
+   * 为什么以面宽为准（用户核对意见）：地块划分的真实依据就是面宽 ——
+   * 沿街 20~35 m 一块，进深 30~45 m。反过来按面积定目标，同样 40 单位²
+   * 的地块可以是 22×22 m，也可以是 60×7 m 的窄条，后者退线完就是一栋
+   * 超长的薄楼。面宽定死之后，这个形状陷阱从源头消失。
+   *
+   * 街区中位 74 m 见方时：面宽 26 m → 每边 3 块，一个街区 6~9 块地。
    */
   parcelPitchM: number;
   /** 一级分割线（贯通子街坊）铺的沥青服务车道宽度，米 */
   seamWideM: number;
+  /**
+   * 地块切分的**模式权重**：正交网格 / 斜切 / 自由 / 跟随街区。
+   *
+   * 每个街区按这里的**比重**抽一种模式：
+   *   · ortho  正交网格（默认肌理：按沿街面宽 × 进深切）
+   *   · diag   斜切（相对街区主轴旋转 45° 起刀，之后正交）
+   *   · free   自由（每刀 ±20° 抖动，出现不规则地块）
+   *   · field  跟随街区（刀锋跟着街区最长边走，斜街区里不跟街道打架）
+   * 权重是相对的，全填 0 会退回 ortho。
+   */
+  parcelPatterns: ParcelPatternWeights;
   /** 二级分割线（地块之间）铺的混凝土巷道宽度，米 */
   seamNarrowM: number;
   /** 地块内部主路（接外部道路那条）的车行道宽，米 */
@@ -187,12 +284,19 @@ export function defaultParams(): TownParams {
       gapM: 1.0,
       setbackK: 0.036,
       parcelTargetA: 60,
-      // 小地块：默认开。街区中位 74 m 见方，30 m 一刀切成 4 块，
-      // 每块 37×37 m（≈1370 m²），放一栋 20×16 m 的楼 + 一圈院子，
-      // 覆盖率 55% —— 对应参考城市"楼占一半、另一半是草坪"的比例。
+      // 小地块：默认开。
+      //
+      // 「沿街面宽 26 m」是一个街区切几块的唯一旋钮：街区中位 74 m 见方时，
+      // 沿街 74/26 ≈ 3 块，进深再按 45 m 横切一刀 → 一个街区 6 块地，
+      // 每块 26×37 m（≈960 m²），退线完是"楼 20×18 m + 一圈院子"，
+      // 覆盖率 40% 上下 —— 住宅地块的常见尺度。
+      // 21 m 会切到 9 块（院子比楼大），34 m 只剩 4 块（地块过大）。
       parcelize: true,
-      parcelPitchM: 46,
+      parcelPitchM: 26,
       seamWideM: 5,
+      // 四种切法：正交占近一半（城市该有的底子），跟随街区 / 斜切各一份，
+      // 剩下一点给不规则地块。
+      parcelPatterns: { ...DEFAULT_PARCEL_PATTERNS },
       seamNarrowM: 3.5,
       internalRoadW: 7,
       internalRoads: 'tensor',
@@ -266,9 +370,9 @@ const LIMITS: Record<string, [number, number]> = {
   'block.gapM': [0.3, 6],
   'block.setbackK': [0, 0.12],
   'block.parcelTargetA': [20, 160],
-  // 下限 18 m：再小一个地块就放不下"楼 + 退线 + 入户"，切出来的全是碎片。
-  // 上限 60 m：再大一个街区只切一刀，等于没切。
-  'block.parcelPitchM': [18, 60],
+  // 沿街面宽 18~48 m。下限 18：再窄一个地块就放不下"楼 + 退线 + 入户"；
+  // 上限 48：再宽一栋楼就占满整条街面，地块交界读不出来。
+  'block.parcelPitchM': [18, 48],
   'block.seamWideM': [2.5, 12],
   'block.seamNarrowM': [1.5, 8],
   'block.internalRoadW': [4, 14],
@@ -300,7 +404,7 @@ const LIMITS: Record<string, [number, number]> = {
   'building.towerHMin': [1, 40],
   'building.towerHMaxCore': [2, 40],
   'building.towerHMaxEdge': [2, 40],
-  'building.slabHMin': [1, 20],
+  'building.slabHMin': [0.4, 20],
   'building.slabHMax': [1, 24],
   'building.mergeChance': [0, 0.6],
   'building.tightRadius': [0.1, 0.9],
@@ -352,6 +456,17 @@ export function resolveParams(p?: DeepPartial<TownParams>): TownParams {
   swap('towerHMin', 'towerHMaxEdge');
   swap('slabHMin', 'slabHMax');
   if (out.block.internalRoads !== 'path') out.block.internalRoads = 'tensor';
+  // 模式权重是对象，深合并一层：面板只改其中一项时，其余三项不能丢
+  const pat = out.block.parcelPatterns as Partial<BlockParams['parcelPatterns']> | undefined;
+  out.block.parcelPatterns = {
+    ...d.block.parcelPatterns,
+    ...(pat ?? {}),
+  };
+  for (const k of ['ortho', 'diag', 'free', 'field'] as const) {
+    const v = out.block.parcelPatterns[k];
+    out.block.parcelPatterns[k] =
+      typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : d.block.parcelPatterns[k];
+  }
   out.block.parcelize = out.block.parcelize !== false;
   out.block.zonePad = out.block.zonePad !== false;
   out.block.serviceLoop = out.block.serviceLoop !== false;
@@ -385,69 +500,65 @@ export interface ParamSpec {
   /**
    * 这个参数**什么时候才生效**。
    *
-   * 面板上「地块切分」里摆着四个看起来都相关的旋钮，但它们的生效范围完全
-   * 不同（cellM 只在老管线里用、parcelTargetA 只在禁建区 / 手动指定时用）。
-   * 不写清楚，用户调完发现城市没反应 —— 或者反应和预期差很远。
+   * 面板上几个看起来都相关的旋钮，生效范围其实完全不同。不写清楚，
+   * 用户调完发现城市没反应 —— 或者反应和预期差很远。
    */
   hint?: string;
+  /**
+   * 收进「高级参数」折叠区（默认收起）。
+   *
+   * 用户核对意见："移除或者预设化一些复杂的参数，还有一些无效参数"。
+   * 判定标准两条：① 默认值已经很难调坏；② 调整它只改变"精细度"，
+   * 不改变城市读起来合不合理。这类参数留在主面板上只会让人不敢动。
+   */
+  adv?: boolean;
 }
 
+/**
+ * 从面板上**移除**的参数（保留内核字段，值固定，不再暴露）：
+ *
+ *   · `cellM` 开发单元边长 —— 只在关掉「街区切成小地块」的老管线里读，
+ *     而那条路现在只剩禁建区兜底走。主面板上它永远无效。
+ *   · `parcelTargetA` 地块目标面积 —— 被「沿街面宽」取代；只有选中单块地块
+ *     手动指定块数时才会被写，那不是面板上的全局参数。
+ *   · `pathCellM / pathTurn / pathJitter` —— A* 内部路网的栅格与代价，只有
+ *     "内部路网 = A* 寻路"时才读；路网形态本身默认是张量主轴直切，所以这三根
+ *     只在「高级参数 → 巷道 / 内部路 / 寻路」里露出来。
+ *
+ * 从面板上**预设化**的参数：巷道宽 / 内部路宽 / 环路三件套 / 避让让距 /
+ * 塔楼比例 / 退线系数 / 楼间缝 / 裙房进深与占比 / 内部路网形态 —— 全部收进
+ * 「高级参数」折叠区（`ParamSpec.adv`）。
+ */
 export const BLOCK_SPECS: ParamSpec[] = [
   {
-    key: 'cellM',
-    label: '开发单元边长',
-    unit: 'm',
-    step: 1,
-    ...lim('block.cellM'),
-    topic: 'parcel',
-    hint: '只在「街区切成小地块」**关闭**时生效（老管线的一格 = 一栋楼）',
-  },
-  { key: 'gapM', label: '楼间缝宽', unit: 'm', step: 0.1, ...lim('block.gapM'), topic: 'building' },
-  { key: 'setbackK', label: '建筑退线系数', step: 0.002, ...lim('block.setbackK'), topic: 'building' },
-  {
-    key: 'parcelTargetA',
-    label: '地块目标面积',
-    unit: '单位²',
-    step: 4,
-    ...lim('block.parcelTargetA'),
-    topic: 'parcel',
-    hint: '只在**禁建区**与「选中地块 → 切分」里生效；普通街区按「小地块边长」算',
-  },
-  {
     key: 'parcelPitchM',
-    label: '小地块边长',
+    label: '沿街面宽',
     unit: 'm',
     step: 1,
     ...lim('block.parcelPitchM'),
     topic: 'parcel',
-    hint: '开启切分时**唯一**决定切几块的参数：目标面积 = 边长²',
+    hint: '决定<b>沿街切几块</b>：面宽 26 m 时，74 m 见方的街区每边 3 块、一共 6 块地',
   },
-  { key: 'seamWideM', label: '一级巷道宽', unit: 'm', step: 0.5, ...lim('block.seamWideM'), topic: 'road' },
-  { key: 'seamNarrowM', label: '二级巷道宽', unit: 'm', step: 0.5, ...lim('block.seamNarrowM'), topic: 'road' },
-  { key: 'internalRoadW', label: '内部路车行道', unit: 'm', step: 0.5, ...lim('block.internalRoadW'), topic: 'road' },
-  { key: 'pathCellM', label: '寻路栅格边长', unit: 'm', step: 1, ...lim('block.pathCellM'), topic: 'road' },
-  { key: 'pathTurn', label: '寻路转弯惩罚', step: 0.2, ...lim('block.pathTurn'), topic: 'road' },
-  { key: 'pathJitter', label: '寻路代价扰动', step: 0.02, ...lim('block.pathJitter'), topic: 'road' },
   {
     key: 'spacingK',
     label: '街区尺度系数',
     step: 0.05,
     ...lim('block.spacingK'),
     topic: 'parcel',
-    hint: '决定**街区有多大**（进而决定街区里装几个小地块）',
+    hint: '决定<b>街区有多大</b>（进而决定街区里装几个小地块）',
   },
-  { key: 'loopMinM', label: '环路触发跨度', unit: 'm', step: 5, ...lim('block.loopMinM'), topic: 'loop' },
-  { key: 'loopW', label: '环路车行道', unit: 'm', step: 0.5, ...lim('block.loopW'), topic: 'loop' },
-  { key: 'loopVergeM', label: '环路外侧绿带', unit: 'm', step: 0.5, ...lim('block.loopVergeM'), topic: 'loop' },
-  { key: 'zoneAvoidPadM', label: '禁区避障让距', unit: 'm', step: 1, ...lim('block.zoneAvoidPadM'), topic: 'avoid' },
+  { key: 'seamWideM', label: '一级巷道宽', unit: 'm', step: 0.5, ...lim('block.seamWideM'), topic: 'road', adv: true },
+  { key: 'seamNarrowM', label: '二级巷道宽', unit: 'm', step: 0.5, ...lim('block.seamNarrowM'), topic: 'road', adv: true },
+  { key: 'internalRoadW', label: '内部路车行道', unit: 'm', step: 0.5, ...lim('block.internalRoadW'), topic: 'road', adv: true },
+  { key: 'loopMinM', label: '环路触发跨度', unit: 'm', step: 5, ...lim('block.loopMinM'), topic: 'loop', adv: true },
+  { key: 'loopW', label: '环路车行道', unit: 'm', step: 0.5, ...lim('block.loopW'), topic: 'loop', adv: true },
+  { key: 'loopVergeM', label: '环路外侧绿带', unit: 'm', step: 0.5, ...lim('block.loopVergeM'), topic: 'loop', adv: true },
+  { key: 'zoneAvoidPadM', label: '禁区避障让距', unit: 'm', step: 1, ...lim('block.zoneAvoidPadM'), topic: 'avoid', adv: true },
+  { key: 'gapM', label: '楼间缝宽', unit: 'm', step: 0.1, ...lim('block.gapM'), topic: 'building', adv: true },
+  { key: 'setbackK', label: '建筑退线系数', step: 0.002, ...lim('block.setbackK'), topic: 'building', adv: true },
 ];
 
 export const BUILDING_SPECS: ParamSpec[] = [
-  { key: 'towerChance', label: '塔楼比例（外围）', step: 0.02, ...lim('building.towerChance'), topic: 'building' },
-  { key: 'towerChanceCore', label: '塔楼比例（中心）', step: 0.02, ...lim('building.towerChanceCore'), topic: 'building' },
-  { key: 'mergeChance', label: '合并成板楼', step: 0.02, ...lim('building.mergeChance'), topic: 'building' },
-  { key: 'slabHMax', label: '板楼最高', unit: '单位', step: 0.2, ...lim('building.slabHMax'), topic: 'building' },
-  { key: 'towerHMaxCore', label: '塔楼最高（中心）', unit: '单位', step: 0.5, ...lim('building.towerHMaxCore'), topic: 'building' },
   { key: 'spacingM', label: '楼栋间距', unit: 'm', step: 1, ...lim('building.spacingM'), topic: 'building' },
   { key: 'maxPerParcel', label: '每地块楼栋上限', unit: '栋', step: 1, ...lim('building.maxPerParcel'), topic: 'building' },
   {
@@ -457,6 +568,7 @@ export const BUILDING_SPECS: ParamSpec[] = [
     step: 1,
     ...lim('building.podiumDepthM'),
     topic: 'building',
+    adv: true,
     hint: '商业 / 商务 / 市政地块的裙房围边厚度；设 0 = 不生成裙房',
   },
   {
@@ -465,9 +577,113 @@ export const BUILDING_SPECS: ParamSpec[] = [
     step: 0.01,
     ...lim('building.podiumChance'),
     topic: 'building',
+    adv: true,
     hint: '随机用"塔楼 + 裙房 + 内院"的比例（默认 0.15 = 15%）',
   },
+  { key: 'towerChance', label: '塔楼比例（外围）', step: 0.02, ...lim('building.towerChance'), topic: 'building', adv: true },
+  { key: 'towerChanceCore', label: '塔楼比例（中心）', step: 0.02, ...lim('building.towerChanceCore'), topic: 'building', adv: true },
+  { key: 'mergeChance', label: '合并成板楼', step: 0.02, ...lim('building.mergeChance'), topic: 'building', adv: true },
+  { key: 'slabHMax', label: '板楼最高', unit: '单位', step: 0.2, ...lim('building.slabHMax'), topic: 'building', adv: true },
+  { key: 'towerHMaxCore', label: '塔楼最高（中心）', unit: '单位', step: 0.5, ...lim('building.towerHMaxCore'), topic: 'building', adv: true },
 ];
+
+/**
+ * 建筑高度档位预设。
+ *
+ * 面板上原来有 9 个建筑滑杆（塔楼比例 ×2、板楼最高、塔楼最高、合并比例、
+ * 楼间缝、退线系数、裙房进深、裙房占比）—— 每个都"有用"，但没人能同时
+ * 调好九个互斥的数。用户真正想说的是"这是低层城市还是高楼城市"。
+ *
+ * 所以收成一个四档选择，每档给一整组参数。选「混合」时**不动任何值**，
+ * 保持各参数当前状态 —— 这样从「低层」切回「混合」不会丢掉手调过的数。
+ */
+export interface BuildingPreset {
+  key: string;
+  label: string;
+  desc: string;
+  apply?: Partial<BuildingParams>;
+}
+
+export const BUILDING_PRESETS: BuildingPreset[] = [
+  {
+    key: 'mixed',
+    label: '混合',
+    desc: '保持当前各项参数（中心高、外围低）',
+  },
+  {
+    key: 'low',
+    label: '低层',
+    desc: '1~3 层为主，几乎没有塔楼（古镇 / 郊区住区）',
+    apply: {
+      slabHMin: 0.7,
+      slabHMax: 1.6,
+      towerHMin: 1.4,
+      towerHMaxCore: 2.6,
+      towerHMaxEdge: 2.0,
+      podiumHMin: 0.7,
+      podiumHMax: 1.2,
+      towerChance: 0.02,
+      towerChanceCore: 0.04,
+      mergeChance: 0.34,
+      podiumChance: 0.05,
+    },
+  },
+  {
+    key: 'mid',
+    label: '多层',
+    desc: '4~6 层板楼为主，少量塔楼（欧洲街区 / 老城）',
+    apply: {
+      slabHMin: 1.7,
+      slabHMax: 3.0,
+      towerHMin: 3.2,
+      towerHMaxCore: 5.2,
+      towerHMaxEdge: 4.2,
+      podiumHMin: 1.1,
+      podiumHMax: 1.8,
+      towerChance: 0.08,
+      towerChanceCore: 0.14,
+      mergeChance: 0.3,
+      podiumChance: 0.12,
+    },
+  },
+  {
+    key: 'high',
+    label: '中高层',
+    desc: '7~15 层为主，中心有塔楼（国内常见新区）',
+    apply: {
+      slabHMin: 3.0,
+      slabHMax: 5.4,
+      towerHMin: 6.0,
+      towerHMaxCore: 11.5,
+      towerHMaxEdge: 9.0,
+      podiumHMin: 1.6,
+      podiumHMax: 2.5,
+      towerChance: 0.26,
+      towerChanceCore: 0.5,
+      mergeChance: 0.24,
+      podiumChance: 0.16,
+    },
+  },
+  {
+    key: 'tall',
+    label: '高层',
+    desc: '16 层以上，中心成簇（CBD）',
+    apply: {
+      slabHMin: 4.6,
+      slabHMax: 8.0,
+      towerHMin: 8.5,
+      towerHMaxCore: 16.5,
+      towerHMaxEdge: 13,
+      podiumHMin: 1.8,
+      podiumHMax: 2.8,
+      towerChance: 0.46,
+      towerChanceCore: 0.72,
+      mergeChance: 0.18,
+      podiumChance: 0.2,
+    },
+  },
+];
+
 
 /** 一个参数属于哪个参数对象（block / building），UI 提交时要用它定位 */
 export interface TopicSpec {

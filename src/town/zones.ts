@@ -332,6 +332,41 @@ export function keepLargestRing(subject: Pt[], result: Pt[][]): Pt[] | null {
   return best;
 }
 
+/**
+ * 并集，但**保留"这个多边形有没有洞"这个信息**。
+ *
+ * `unionAll` 只回最大外环、`fromGeom` 直接丢洞 —— 那套口径服务于"城市轮廓"
+ * 这类本来就单连通的面。内部路网不一样：几条巷道围出一圈时，并集是有洞的
+ * 环形，若按外环当实心面铺出去，整块地会被沥青填满。
+ *
+ * 所以这里把 holes 数一并交回调用方，让它自己决定"能铺成一张面"还是
+ * "退回逐条铺"。
+ */
+export function unionParts(rings: Pt[][]): { outer: Pt[]; holes: number }[] {
+  const valid = rings.filter((r) => r.length >= 3);
+  if (valid.length === 0) return [];
+  if (valid.length === 1) return [{ outer: valid[0], holes: 0 }];
+  try {
+    const res = polygonClipping.union(
+      toGeom(valid[0]),
+      ...valid.slice(1).map((r) => toGeom(r))
+    ) as unknown as number[][][][];
+    const out: { outer: Pt[]; holes: number }[] = [];
+    for (const poly of res) {
+      const ring = poly[0];
+      if (!ring) continue;
+      const pts: Pt[] = [];
+      for (const [x, y] of ring) pts.push(new Pt(x / QS, y / QS));
+      const d = dedupe(pts, 1e-7);
+      if (d.length >= 3) out.push({ outer: d, holes: Math.max(0, poly.length - 1) });
+    }
+    return out;
+  } catch {
+    // 布尔运算失败：原样交回，调用方会逐条铺
+    return valid.map((r) => ({ outer: r, holes: 0 }));
+  }
+}
+
 export function subtract(subject: Pt[], clips: Pt[][]): Pt[][] {
   if (clips.length === 0) return [subject];
   try {

@@ -144,10 +144,10 @@ export function buildProp(p: PropFeature, baseY = 0.01): Primitive[] {
       break;
     }
     case 'hedge': {
-      // 低矮绿篱：参考图里修剪过的灌木块 —— 1.5 m 长 × 0.9 m 宽 × 0.45 m 高。
-      // 原来这里是 4.2 × 1.5 × 1.1 m 的"绿墙"，一个块就顶掉半条人行道，
-      // 而且高过 1 m 就挡视线，读起来是围墙不是绿篱。
-      out.push(...box(c, 0.214 * s, 0.129 * s, y0, 0.064 * s, rot, `${p.name}_h`, g, MAT.leafDark, MAT.leaf));
+      // 修剪过的灌木块：1.5 m 长 × 0.9 m 宽，高度由 `hz` 单独给
+      // （默认 1.1 m，与栏杆齐平；原来 0.45 m 读起来像草皮）。
+      const hz = p.hz ?? 1;
+      out.push(...box(c, 0.214 * s, 0.129 * s, y0, 0.064 * s * hz, rot, `${p.name}_h`, g, MAT.leafDark, MAT.leaf));
       break;
     }
     case 'post': {

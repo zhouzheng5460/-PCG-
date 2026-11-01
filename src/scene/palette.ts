@@ -16,6 +16,14 @@ export type MatKey =
   | 'curb'
   // 软质
   | 'grass'
+  /**
+   * 修剪草坪（亮一档）。
+   *
+   * 公园要按"不同的绿地类型"细分地块，而原来只有 grass / grassDark 两种绿 ——
+   * 一块公园切成八格也只有两种颜色，俯视图上读不出"这里换了一种绿地"。
+   * 加这一档之后，草坪 / 草甸 / 密林是三级递减的绿，切分痕迹才看得出来。
+   */
+  | 'grassLight'
   | 'grassDark'
   | 'soil'
   | 'water'
@@ -54,6 +62,7 @@ export const MAT: Record<MatKey, [number, number, number]> = {
   curb: [0.800, 0.788, 0.757],
 
   grass: [0.361, 0.502, 0.271],
+  grassLight: [0.435, 0.565, 0.302],
   grassDark: [0.278, 0.404, 0.212],
   soil: [0.412, 0.353, 0.267],
   water: [0.286, 0.443, 0.522],
