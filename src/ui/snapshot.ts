@@ -21,19 +21,22 @@ import type { LayoutKind } from '../town/grid';
 import type { ParkLevel } from '../town/parking';
 import type { PatchEdit } from '../town/patch';
 import type { LandUse } from '../scene/types';
-import { type TownParams, resolveParams } from '../town/params';
+import { type TownParams, resolveParams, isParcelPattern } from '../town/params';
+import type { ParcelPattern } from '../town/params';
 
 /**
  * 单块地块覆盖的紧凑写法。
  *
  * 键是 `patchKey`（质心取整，形如 `123:-45`），值只带**真正改过**的字段：
- * 用途 u / 高度倍率 h / 切分目标面积 a。不改就不写 —— 分享链接里
- * 一条覆盖大约 20 字符，改十块地也只是两百字符的量级。
+ * 用途 u / 高度倍率 h / 切分目标面积 a / 切分模式 pt。不改就不写 ——
+ * 分享链接里一条覆盖大约 20 字符，改十块地也只是两百字符的量级。
  */
 export interface PatchEditSnap {
   u?: LandUse;
   h?: number;
   a?: number;
+  /** 切分模式单块指定 */
+  pt?: ParcelPattern;
 }
 
 /** 快照覆盖的那部分界面状态（app.ts 的 State 是它的超集） */
@@ -124,7 +127,8 @@ export function snapshotOf(st: SceneState): Snapshot {
     if (e.use) o.u = e.use;
     if (typeof e.heightK === 'number' && Math.abs(e.heightK - 1) > 1e-3) o.h = r2(e.heightK);
     if (typeof e.parcelTargetA === 'number' && e.parcelTargetA > 0) o.a = r2(e.parcelTargetA);
-    // 三个字段都没改就别写进链接（"我点过这块地但什么都没改"不该占字符）
+    if (e.pattern) o.pt = e.pattern;
+    // 字段都没改就别写进链接（"我点过这块地但什么都没改"不该占字符）
     if (Object.keys(o).length > 0) pe[key] = o;
   }
 
@@ -231,6 +235,7 @@ export function applySnapshot(st: SceneState, sn: Snapshot): boolean {
       if (typeof v.u === 'string') e.use = v.u as LandUse;
       if (typeof v.h === 'number' && Number.isFinite(v.h) && v.h > 0) e.heightK = v.h;
       if (typeof v.a === 'number' && Number.isFinite(v.a) && v.a > 0) e.parcelTargetA = v.a;
+      if (isParcelPattern(v.pt)) e.pattern = v.pt;
       if (Object.keys(e).length > 0) m.set(key, e);
     }
     st.patchEdits = m;

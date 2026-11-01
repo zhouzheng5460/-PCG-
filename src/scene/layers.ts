@@ -15,7 +15,7 @@
 // test/layers.test.ts 的"无孤儿要素"断言当场抓住。
 //
 // 图层 id 的命名规则：`类别:子类`。前四段（solid / road / pave / prop / path）
-// 对应 Scene 里的四类要素，`ov:` 是 2D 覆盖层（不产出几何），`hud:` 是分析面板。
+// 对应 Scene 里的四类要素，`ov:` 是 2D 覆盖层（不产出几何）。
 
 import type { PropFeature, PathFeature, SolidFeature, SurfaceFeature } from './types';
 
@@ -35,6 +35,7 @@ export function layerOfSurface(s: SurfaceFeature): LayerId {
   // 用户调图时最常单独关掉的就是草地和铺装。
   switch (s.mat) {
     case 'grass':
+    case 'grassLight':
     case 'grassDark':
       return 'pave:grass';
     case 'water':
@@ -183,24 +184,10 @@ export const OVERLAY_GROUPS: LayerGroupDef[] = [
   },
 ];
 
-/** HUD 分析面板的显隐 */
-export const HUD_GROUPS: LayerGroupDef[] = [
-  {
-    id: 'hud',
-    label: 'HUD 分析',
-    items: [
-      { id: 'hud:stat', label: '场景总量', on: true },
-      { id: 'hud:use', label: '用地构成', on: true },
-      { id: 'hud:health', label: '生成规则体检', on: true },
-      { id: 'hud:road', label: '道路分级里程', on: true },
-    ],
-  },
-];
-
 /** 全部图层 id */
 export function allLayerIds(): LayerId[] {
   const out: LayerId[] = [];
-  for (const g of [...LAYER_GROUPS, ...OVERLAY_GROUPS, ...HUD_GROUPS]) {
+  for (const g of [...LAYER_GROUPS, ...OVERLAY_GROUPS]) {
     for (const it of g.items) out.push(it.id);
   }
   return out;
@@ -209,7 +196,7 @@ export function allLayerIds(): LayerId[] {
 /** 默认显隐：LayerDef.on 缺省为 true */
 export function defaultVisibility(): Record<LayerId, boolean> {
   const v: Record<LayerId, boolean> = {};
-  for (const g of [...LAYER_GROUPS, ...OVERLAY_GROUPS, ...HUD_GROUPS]) {
+  for (const g of [...LAYER_GROUPS, ...OVERLAY_GROUPS]) {
     for (const it of g.items) v[it.id] = it.on !== false;
   }
   return v;

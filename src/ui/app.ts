@@ -1,4 +1,4 @@
-// 主界面：左栏（显示控制 + HUD 分析） / 中间画布 / 右栏（生成参数）
+// 主界面：左栏（显示控制） / 中间画布 / 右栏（生成参数）
 //
 // 布局为什么改成三栏
 // ------------------
@@ -27,31 +27,28 @@ import {
   type TownParams,
   type ParamSpec,
   type ParamTopic,
+  type ParcelPattern,
   BLOCK_SPECS,
   BUILDING_SPECS,
   SPECS_BY_TOPIC,
+  PARCEL_PATTERN_META,
+  DEFAULT_PARCEL_PATTERNS,
+  BUILDING_PRESETS,
   defaultParams,
+  patternPercents,
   resolveParams,
 } from '../town/params';
 import { exportGLB } from '../export/glb';
 import {
-  HUD_GROUPS,
   LAYER_GROUPS,
   OVERLAY_GROUPS,
   type LayerGroupDef,
   defaultVisibility,
   makeFilter,
 } from '../scene/layers';
-import {
-  type Diagnostics,
-  diagnose,
-  hudHealth,
-  hudRoad,
-  hudRows,
-  hudStat,
-  hudUseBar,
-  hudVerdict,
-} from './hud';
+// 只留 `diagnose`：左栏每行图层后面的数字靠它数。HUD 那个"场景体检"面板已删
+// （用户核对意见：面板上的结论没人看，反而把显示控制挤出首屏）。
+import { type Diagnostics, diagnose } from './hud';
 
 /** 街网形态的中文名（与 grid.ts 的 LayoutKind 一一对应） */
 const LAYOUT_LABEL: Record<LayoutKind, string> = {
@@ -111,6 +108,14 @@ interface State {
   vis: Record<string, boolean>;
   /** 单块地块的手动覆盖（键 = patchKey），跟着种子一起保存到 localStorage */
   patchEdits: Map<string, PatchEdit>;
+  /**
+   * 建筑高度档位（`BUILDING_PRESETS` 的 key）。
+   *
+   * 它只是一个**回显标记**：选了哪档就亮哪个按钮。真正的高度值直接写进
+   * `params.building`，档位本身不参与生成 —— 所以手拖过任何一根建筑滑杆后，
+   * 这里会退回 'custom'（四档都不亮），面板不撒谎。
+   */
+  buildingPreset: string;
 }
 
 const state: State = {
@@ -134,6 +139,7 @@ const state: State = {
   params: defaultParams(),
   vis: defaultVisibility(),
   patchEdits: new Map(),
+  buildingPreset: 'mixed',
 };
 
 let model: Model;
@@ -288,7 +294,7 @@ function regenerate(): void {
     applyViewFlags();
     if (currentView === '3d') refresh3D();
     updateStats();
-    refreshHud();
+    refreshDiag();
     syncHashSoon();
   } catch (e) {
     toast(`生成失败：${(e as Error).message}`, true);
@@ -303,7 +309,7 @@ function rebuildGeometry(): void {
     view2d.draw();
     if (currentView === '3d') refresh3D();
     updateStats();
-    refreshHud();
+    refreshDiag();
   } catch (e) {
     toast(`重建失败：${(e as Error).message}`, true);
     view2d.draw();
@@ -318,7 +324,7 @@ function updateZones(zones: Zone[]): void {
   view2d.draw();
   renderZoneList();
   updateStats();
-  refreshHud();
+  refreshDiag();
   if (currentView === '3d') refresh3D();
 }
 
@@ -393,29 +399,18 @@ function layerGroupHtml(g: LayerGroupDef, counts: Record<string, number>, withCo
 /**
  * 左栏。
  *
- * 结构定稿：**HUD 在上，显示控制在下**。
- * 一开始是反的（显示控制在前），实测截图里九组图层一展开就有 700 px，
- * 体检面板整个被顶到屏幕外 —— 而"改完显隐立刻看指标怎么变"正是这个面板的用途。
- * 所以两块都做成 `details.sec`，HUD 默认展开置顶，指标首屏可见；HUD 自己的
- * 四个开关再折一层，不占版面。
+ * 左栏只有一块：显示控制。
+ *
+ * 原来它上面还有一块"HUD 分析"（场景总量 / 用地构成 / 规则体检 / 里程），
+ * 默认展开置顶，九组图层一展开就把它挤出首屏 —— 用户核对时说的是"这块没人看"。
+ * 已整块删除，`src/ui/hud.ts` 里只留 `diagnose`（左栏每行后面的数字靠它数）。
  */
 function buildLeft(): void {
   const counts = diag?.layerCounts ?? {};
   const sceneGroups = LAYER_GROUPS.map((g) => layerGroupHtml(g, counts, true)).join('');
   const overGroups = OVERLAY_GROUPS.map((g) => layerGroupHtml(g, counts, false)).join('');
-  const hudToggles = HUD_GROUPS.map((g) => layerGroupHtml(g, counts, false)).join('');
 
   $('#leftbar').innerHTML = `
-    <details class="sec" open>
-      <summary><span class="dot"></span>HUD 分析<span class="sec-tag">场景体检</span></summary>
-      <div class="sec-body">
-        <div id="hud-body"></div>
-        <details class="lyr-sub">
-          <summary>面板开关</summary>
-          <div class="lyr-sub-body">${hudToggles}</div>
-        </details>
-      </div>
-    </details>
     <details class="sec" open>
       <summary><span class="dot"></span>显示控制<span class="sec-tag">画布 · 三维 · 导出</span></summary>
       <div class="sec-body">
@@ -430,44 +425,15 @@ function buildLeft(): void {
     </details>`;
 
   bindLeft();
-  renderHudBody();
 }
 
-function renderHudBody(): void {
-  const el = document.getElementById('hud-body');
-  if (!el) return;
-  if (!diag) {
-    el.innerHTML = `<div class="empty">还没有生成结果。</div>`;
-    return;
-  }
-  const d = diag;
-  const parts: string[] = [];
-  // 结论永远在最上面：它是"这版规则完善了没有"的唯一直接回答
-  if (vis('hud:health')) parts.push(hudVerdict(d));
-  if (vis('hud:stat')) {
-    parts.push(`<div class="hud"><h4>场景总量<span class="tag">半径 ${(d.radiusM / 1000).toFixed(2)} km</span></h4>${hudRows(hudStat(d))}</div>`);
-  }
-  if (vis('hud:use')) {
-    parts.push(`<div class="hud"><h4>用地构成<span class="tag">${d.patches} 街区</span></h4>${hudUseBar(d)}</div>`);
-  }
-  if (vis('hud:health')) {
-    parts.push(`<div class="hud"><h4>生成规则体检<span class="tag">${hudHealth(d).length} 项</span></h4>${hudRows(hudHealth(d))}</div>`);
-  }
-  if (vis('hud:road')) {
-    parts.push(
-      `<div class="hud"><h4>道路分级里程<span class="tag">总 ${(d.roadLenM / 1000).toFixed(2)} km</span></h4>${hudRows(hudRoad(d))}</div>`
-    );
-  }
-  el.innerHTML = parts.length ? parts.join('') : `<div class="empty">HUD 全部关掉了。</div>`;
-}
-
-/** 重算体检 + 刷新左栏数字 */
-function refreshHud(): void {
+/** 重数一遍各图层有多少个要素，刷到左栏每行后面的数字上 */
+function refreshDiag(): void {
   try {
     diag = diagnose(model);
   } catch (e) {
     diag = null;
-    console.warn('HUD 计算失败', e);
+    console.warn('要素统计失败', e);
   }
   if (diag) {
     for (const g of LAYER_GROUPS) {
@@ -477,7 +443,6 @@ function refreshHud(): void {
       }
     }
   }
-  renderHudBody();
 }
 
 function bindLeft(): void {
@@ -497,7 +462,7 @@ function bindLeft(): void {
   bar.querySelectorAll<HTMLButtonElement>('button[data-gact]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const gid = btn.dataset.group as string;
-      const g = [...LAYER_GROUPS, ...OVERLAY_GROUPS, ...HUD_GROUPS].find((q) => q.id === gid);
+      const g = [...LAYER_GROUPS, ...OVERLAY_GROUPS].find((q) => q.id === gid);
       if (!g) return;
       const on = btn.dataset.gact === 'all';
       for (const it of g.items) state.vis[it.id] = on;
@@ -539,7 +504,6 @@ function bindLeft(): void {
 function onVisibilityChanged(): void {
   applyViewFlags();
   if (currentView === '3d') refresh3D();
-  renderHudBody();
   saveLayers();
 }
 
@@ -589,8 +553,70 @@ function paramRow(group: 'block' | 'building', sp: ParamSpec): string {
  * 那块功能离得太远，改一个值得来回找。
  * 现在按主题拆开，挂到街道 / 禁建区 / 地块 / 建筑各自的分区下面。
  */
-function specRows(topic: ParamTopic): string {
-  return SPECS_BY_TOPIC[topic].map(({ ns, sp }) => paramRow(ns, sp)).join('');
+function specRows(topic: ParamTopic, adv = false): string {
+  return SPECS_BY_TOPIC[topic]
+    .filter(({ sp }) => Boolean(sp.adv) === adv)
+    .map(({ ns, sp }) => paramRow(ns, sp))
+    .join('');
+}
+
+/**
+ * 「高级参数」折叠区：把这个分区里的 `adv` 参数收起来，默认不展开。
+ *
+ * 用户核对意见是"移除或者预设化一些复杂的参数"。这些参数都满足同一条：
+ * 默认值已经很难调坏，动它只改变精细度，不改变城市读起来合不合理
+ * （巷道宽 3.5 m 还是 4.5 m、裙房进深 6 m 还是 8 m）。留在主面板上只会
+ * 让人不敢动主面板。真正要抠细节的人点开就有，一个都没删。
+ */
+function advBox(topics: ParamTopic[], title = '高级参数', extra = ''): string {
+  const rows = topics.map((t) => specRows(t, true)).join('');
+  if (!rows.trim() && !extra.trim()) return '';
+  return `<details class="lyr-sub adv-sub">
+      <summary>${title}</summary>
+      <div class="lyr-sub-body">${extra}${rows}</div>
+    </details>`;
+}
+
+/**
+ * 「切分模式比重」那一组：堆叠条 + 五行滑杆 + 两个快捷按钮。
+ *
+ * 权重是**相对值**，所以每行右边给的不是权重本身（0.28 读不出"占三成"），
+ * 而是归一化后的百分比；堆叠条画的是同一份百分比，拖滑杆时条子实时跟着变。
+ * 全 0 时 `patternPercents` 会按"退回 ortho 100%"回报 —— 这与引擎里
+ * `pickParcelPattern` 的兜底是同一条规则，面板不撒谎。
+ */
+function parcelPatternGroup(): string {
+  const w = state.params.block.parcelPatterns;
+  const pct = patternPercents(w);
+  const on = state.params.block.parcelize;
+
+  const bar = PARCEL_PATTERN_META.map(
+    (m) =>
+      `<i class="k-${m.key}${pct[m.key] === 0 ? ' zero' : ''}" data-seg="${m.key}" style="width:${pct[m.key]}%" title="${m.label} ${pct[m.key]}%"></i>`
+  ).join('');
+
+  const rows = PARCEL_PATTERN_META.map(
+    (m) => `<div class="pat-row">
+        <span class="swatch k-${m.key}"></span>
+        <label title="${m.desc}">${m.label}</label>
+        <input type="range" min="0" max="1" step="0.02" value="${w[m.key]}" data-pattern="${m.key}"/>
+        <span class="val" id="val-pat-${m.key}">${pct[m.key]}%</span>
+      </div>`
+  ).join('');
+
+  return `<div class="grp-label">切分模式比重</div>
+    <div class="pat-group${on ? '' : ' off'}" id="pat-group">
+      <div class="pat-bar" id="pat-bar">${bar}</div>
+      ${rows}
+      <div class="row" style="margin-top:8px">
+        <button class="ghost grow" id="btn-pat-even">均分</button>
+        <button class="ghost grow" id="btn-pat-reset">默认配比</button>
+      </div>
+      <div class="tip" style="margin-top:6px">
+        每个街区按这个比重<b>抽</b>一种切法，百分比是全城的大致配比（不是逐块指定 —— 要指定就点中那块地）。
+        ${on ? '' : '<br/><b>当前「街区切成小地块」是关的，这组比重对普通街区不起作用。</b>'}
+      </div>
+    </div>`;
 }
 
 /**
@@ -608,9 +634,10 @@ const MANUAL_MAX_BLOCKS = 8;
  * 只在 2D 里点中一块地时出现，放在右栏最上面 —— 它和下面的全局参数是
  * **不同层级**的东西：全局参数一改全城重来，这里只改这一块。
  *
- * 三个旋钮分别对应 PatchEdit 的三个字段：用途 / 高度倍率 / 切分目标面积。
+ * 四个旋钮分别对应 PatchEdit 的四个字段：用途 / 高度倍率 / 切分目标面积 / 切分模式。
  * 面板上「切分」一栏给的是**块数**（1~8），提交时换算成目标面积
  * （地块面积 ÷ 块数）—— 用户想的是"这块地切成几栋"，不是"目标多少平米"。
+ * 「模式」一栏是单选：留空就跟全局比重抽签，选了就固定这一种切法。
  */
 function patchPanel(): string {
   const p = model.patches.find((q) => patchKey(q) === selectedPatchKey);
@@ -632,6 +659,27 @@ function patchPanel(): string {
     ? Math.max(1, Math.min(MANUAL_MAX_BLOCKS, Math.round(areaU / (edit.parcelTargetA as number))))
     : autoBlocks;
   const isBlocked = p.blocked;
+
+  // 切分模式：留一个「跟随全局」的空选项。空值在 PatchEdit 里就表示"这一项没改过"，
+  // 分享链接的序列化也会跳过它 —— 所以默认值必须是空串，不能写成 'ortho'。
+  const patternOptions =
+    `<option value="" ${edit.pattern ? '' : 'selected'}>跟随全局配比</option>` +
+    PARCEL_PATTERN_META.map(
+      (m) => `<option value="${m.key}" ${edit.pattern === m.key ? 'selected' : ''}>${m.label} · ${m.desc}</option>`
+    ).join('');
+
+  // 「这块到底切成了什么样」要报真话：usedPattern 是生成时记下的实际结果。
+  // 不在这里重跑抽签 —— 抽签依赖随机流，面板重跑一次就和画面不是同一座城了。
+  const usedMeta = PARCEL_PATTERN_META.find((m) => m.key === p.usedPattern);
+  const usedLabel = usedMeta ? usedMeta.label : '未切分';
+  const usedNote = usedMeta
+    ? edit.pattern
+      ? '（手动指定）'
+      : '（按全局配比抽到）'
+    : // 没切分却选了模式：切法无从谈起，必须说清，否则用户以为选择器坏了
+      edit.pattern
+      ? '<span style="color:var(--accent)">（这块目前没有切成小地块，选的模式不会生效）</span>'
+      : '（整块规划：面积没到切分门槛、用途不切、或「街区切成小地块」关着）';
 
   const useOptions = (Object.keys(USE_LABEL) as LandUse[])
     .map((k) => `<option value="${k}" ${k === use ? 'selected' : ''}>${USE_LABEL[k]}</option>`)
@@ -658,7 +706,12 @@ function patchPanel(): string {
                   <span class="val" id="sel-nb-val">${nBlocks} 栋${manual ? '' : '·自动'}</span>
                 </div>
               </div>
-              <div class="tip" style="margin-top:6px">「切分」= 这块地切成几个小地块（每块一栋楼），1 就是整块一栋。不拖这个滑杆时跟着全局「小地块边长」走（自动最多 4 块）；拖过之后这一块单独按你给的块数切，最多 ${MANUAL_MAX_BLOCKS} 块。生效前提是城市参数里开着「街区切成小地块」。</div>`
+              <div class="row"><label>模式</label>
+                <select id="sel-pattern" class="grow">${patternOptions}</select>
+              </div>
+              <div class="tip" style="margin-top:6px">当前这块实际切法：<b>${usedLabel}</b>${usedNote}</div>
+              <div class="tip" style="margin-top:6px">「切分」= 这块地切成几个小地块（每块一栋楼），1 就是整块一栋。不拖这个滑杆时跟着全局「小地块边长」走（自动最多 4 块）；拖过之后这一块单独按你给的块数切，最多 ${MANUAL_MAX_BLOCKS} 块。生效前提是城市参数里开着「街区切成小地块」。</div>
+              <div class="tip" style="margin-top:6px">「模式」这一栏只作用于这块地：不选就跟全局「切分模式比重」一起抽签，选了就固定用那一种。想看清某种切法长什么样，选一个再对比就最快。</div>`
         }
         <div class="row" style="margin-top:8px">
           <button class="ghost grow" id="sel-clear">清除这块的改动</button>
@@ -698,8 +751,23 @@ function bindPatchPanel(): void {
       applyPatchEdit({ parcelTargetA: areaU / n });
     });
   }
-  const clear = document.getElementById('sel-clear');
-  if (clear) {
+  // 切分模式：选空串 = "这一项没改过"，要把字段从覆盖里删掉（不是存个空值），
+  // 否则分享链接会带一个没意义的字段，清除按钮也清不干净。
+  const pat = document.getElementById('sel-pattern') as HTMLSelectElement | null;
+  if (pat) {
+    pat.addEventListener('change', () => {
+      const key = selectedPatchKey;
+      if (!key) return;
+      const cur = { ...(state.patchEdits.get(key) ?? {}) };
+      if (pat.value) cur.pattern = pat.value as ParcelPattern;
+      else delete cur.pattern;
+      if (Object.keys(cur).length > 0) state.patchEdits.set(key, cur);
+      else state.patchEdits.delete(key);
+      regenerate();
+      buildRight();
+    });
+  }
+  const clear = document.getElementById('sel-clear');  if (clear) {
     clear.addEventListener('click', () => {
       if (selectedPatchKey) state.patchEdits.delete(selectedPatchKey);
       regenerate();
@@ -716,8 +784,9 @@ function applyPatchEdit(patch: Partial<PatchEdit>): void {
   const cur = state.patchEdits.get(selectedPatchKey) ?? {};
   state.patchEdits.set(selectedPatchKey, { ...cur, ...patch });
   regenerate();
+  // buildRight 内部已经接了 bindRight / bindPatchPanel —— 这里再补一次会让
+  // 每个控件挂两套监听（改一次滑杆重生成两遍城）。之前就是这么写的。
   buildRight();
-  bindRight();
 }
 
 function buildRight(): void {
@@ -787,14 +856,18 @@ function buildRight(): void {
       ROAD_SPECS.local.redLine
     } m（双向两车道）。在图上点任意一条路可单独调宽。</div>
     <div class="grp-label">地块内巷道与内部路</div>
-    <div class="row"><label>内部路网</label>
-      <div class="seg" id="seg-inner">
-        <button data-inner="tensor" class="${state.params.block.internalRoads === 'tensor' ? 'active' : ''}">张量主轴</button>
-        <button data-inner="path" class="${state.params.block.internalRoads === 'path' ? 'active' : ''}">A* 寻路</button>
-      </div>
-    </div>
     ${specRows('road')}
-    <div class="tip" style="margin-top:6px">巷道是把一个街区切成小地块时留下的缝，一级巷 ≥ 二级巷。「A* 寻路」那三项只在内部路网选了 A* 时生效：栅格越细越费时，转弯惩罚越大越爱直走。</div>
+    ${advBox(
+      ['road'],
+      '巷道 / 内部路 / 寻路',
+      `<div class="row"><label>内部路网</label>
+        <div class="seg" id="seg-inner">
+          <button data-inner="tensor" class="${state.params.block.internalRoads === 'tensor' ? 'active' : ''}">张量主轴</button>
+          <button data-inner="path" class="${state.params.block.internalRoads === 'path' ? 'active' : ''}">A* 寻路</button>
+        </div>
+      </div>`
+    )}
+    <div class="tip" style="margin-top:6px">巷道是把一个街区切成小地块时留下的缝：一级巷（沿街方向的分界）能进车，铺沥青带虚线；二级巷（前后排之间）是后巷，铺混凝土不带标线。</div>
     `
   );
 
@@ -815,10 +888,12 @@ function buildRight(): void {
     <div class="row"><label class="check"><input type="checkbox" id="chk-zone-pad" ${state.params.block.zonePad ? 'checked' : ''}/>只铺硬地，不排建筑</label></div>
     <div class="row"><label class="check"><input type="checkbox" id="chk-loop" ${state.params.block.serviceLoop ? 'checked' : ''}/>区内服务环路</label></div>
     ${specRows('loop')}
+    ${advBox(['loop'], '环路尺寸')}
     <div class="grp-label">周边路网避让</div>
     <div class="row"><label class="check"><input type="checkbox" id="chk-zone-avoid" ${state.params.block.zoneAvoid ? 'checked' : ''}/>路网避让禁建区</label></div>
     <div class="row"><label class="check"><input type="checkbox" id="chk-zone-bend" ${state.params.block.zoneAvoidBend ? 'checked' : ''}/>弧线绕障（实验）</label></div>
     ${specRows('avoid')}
+    ${advBox(['avoid'], '避障让距')}
     <div class="tip" style="margin-top:8px">禁建区是一个封闭地块：整块轮廓切出来单独成块，区内不排建筑、不做用途分档，但照常有地坪、内部路与绿化。「避让让距」指的是马路牙子离禁建区边界至少留多少米 —— 默认直着让开，勾「弧线绕障」才用势流圆弧绕过去。</div>
     `
   );
@@ -855,15 +930,16 @@ function buildRight(): void {
     `
     <div class="row"><label class="check"><input type="checkbox" id="chk-parcel" ${state.params.block.parcelize ? 'checked' : ''}/>街区切成小地块</label></div>
     ${specRows('parcel')}
+    ${advBox(['parcel'])}
+    ${parcelPatternGroup()}
     <div class="tip" style="margin-top:6px">
-      <b>开</b>：每个街区按「<b>小地块边长</b>」再分割（目标面积 = 边长²）→
-      每块单独排楼，<b>住宅块内部还会再排成 2~3 栋平行板楼</b>（楼间距见「建筑形态」）→
-      分割线是<b>沥青内路 + 中心虚线</b> → 街区内部有真路 →
-      基底：住宅 / 绿地铺草，商业 / 市政 / 工业铺装。一个街区通常 <b>3~8 栋楼</b>。
+      <b>开</b>：街区先按<b>沿街面宽</b>切成一排临街地块（面宽 26 m 时，74 m 见方的街区
+      每边 3 块），进深超过 40 m 再横切一刀分出前排 / 后排 →
+      每块地单独排楼（住宅院内还会排成 2 栋前后串联的板楼）→
+      一级缝铺<b>沥青巷 + 中心虚线</b>（能进车），二级缝铺<b>混凝土后巷</b>（不带标线）。
       <br/><b>关</b>：整块地按用途排<b>一组体量</b>（塔楼 + 裙房，或一栋大楼），
       绿地只剩沿路一条收边，楼数掉到 1/3 左右。
-      <br/><b>三个尺寸参数各管一件事</b>：小地块边长 = 切几块；街区尺度系数 = 街区多大；
-      开发单元边长 / 地块目标面积只在关掉切分、或禁建区与手动指定地块时生效。
+      <br/><b>两个参数各管一件事</b>：「沿街面宽」= 沿街切几块；「街区尺度系数」= 街区本身多大。
     </div>
     `
   );
@@ -872,8 +948,23 @@ function buildRight(): void {
   const building = details(
     '建筑形态',
     `
+    <div class="row"><label>高度档位</label>
+      <div class="seg" id="seg-bpreset">
+        ${BUILDING_PRESETS.map(
+          (b) =>
+            `<button data-bp="${b.key}" title="${b.desc}" class="${b.key === state.buildingPreset ? 'active' : ''}">${b.label}</button>`
+        ).join('')}
+      </div>
+    </div>
     ${specRows('building')}
-    <div class="tip" style="margin-top:6px">塔楼比例决定"这块地上是盖塔楼还是盖板楼"；中心区通常更高更密。「楼间缝宽」是相邻两栋之间的最小间距，「退线系数」按地块边长的比例把建筑往里收。</div>
+    ${advBox(['building'], '塔楼 / 裙房 / 退线')}
+    <div class="tip" style="margin-top:6px">
+      先选<b>高度档位</b>：低层 / 多层 / 中高层 / 高层，一档把这十来个数一起调好
+      （低层 ≈ 1~3 层，高层 ≈ 16 层以上且中心成簇）。
+      选「混合」不动任何值 —— 从别的档切回来不会丢掉手调过的数。
+      下面两根是<b>楼栋怎么排</b>：间距是同一块地里两栋楼之间的距离，上限是一块地最多排几栋。
+      手拖过任何一根塔楼 / 裙房滑杆后，档位按钮会松开（面板不假装还是那一档）。
+    </div>
     <div class="row" style="margin-top:8px"><button class="ghost grow" id="btn-param-reset">恢复默认参数</button></div>
     `
   );
@@ -968,6 +1059,71 @@ function renderGuideList(): void {
   });
 }
 
+/**
+ * 改 `block` 里的若干参数。
+ *
+ * 必须把整份 `state.params` 递进去：`resolveParams({ block })` 会拿**默认值**
+ * 补齐缺失的 building / green 两节。只传 block 就等于"顺手把建筑参数和绿地参数
+ * 重置回默认" —— 用户调完塔楼比例，再点一下「区内服务环路」就白调了。
+ */
+function setBlockParam(patch: Partial<TownParams['block']>): void {
+  state.params = resolveParams({ ...state.params, block: { ...state.params.block, ...patch } });
+}
+
+/**
+ * 「切分模式比重」的交互。
+ *
+ * 拖滑杆时**不重生成**：只更新百分比文字和堆叠条，松手（change）才 regenerate。
+ * 全城重生成 ~0.9 s，挂在 input 上会变成"拖一格卡一次"，滑杆根本拖不动 ——
+ * 这与其它参数滑杆的处理口径一致。
+ */
+function bindParcelPatterns(): void {
+  const root = document.getElementById('pat-group');
+  if (!root) return;
+
+  /** 重画百分比文字 + 堆叠条（值变了但城市还没重算时也要跟上） */
+  const paint = () => {
+    const pct = patternPercents(state.params.block.parcelPatterns);
+    for (const m of PARCEL_PATTERN_META) {
+      const v = document.getElementById(`val-pat-${m.key}`);
+      if (v) v.textContent = `${pct[m.key]}%`;
+      const seg = root.querySelector<HTMLElement>(`[data-seg="${m.key}"]`);
+      if (seg) {
+        seg.style.width = `${pct[m.key]}%`;
+        seg.classList.toggle('zero', pct[m.key] === 0);
+        seg.title = `${m.label} ${pct[m.key]}%`;
+      }
+    }
+  };
+
+  root.querySelectorAll<HTMLInputElement>('input[data-pattern]').forEach((el) => {
+    el.addEventListener('input', () => {
+      const k = el.dataset.pattern as ParcelPattern;
+      const w = { ...state.params.block.parcelPatterns, [k]: Number(el.value) };
+      state.params = resolveParams({ ...state.params, block: { ...state.params.block, parcelPatterns: w } });
+      paint();
+    });
+    el.addEventListener('change', () => {
+      paint();
+      regenerate();
+    });
+  });
+
+  // 均分 / 默认：一次改五个值，滑杆位置也得跟着回去，所以整栏重画
+  const setAll = (w: Record<ParcelPattern, number>, msg: string) => {
+    state.params = resolveParams({ ...state.params, block: { ...state.params.block, parcelPatterns: { ...w } } });
+    buildRight();
+    regenerate();
+    toast(msg);
+  };
+  document.getElementById('btn-pat-even')?.addEventListener('click', () => {
+    setAll({ ortho: 0.25, diag: 0.25, free: 0.25, field: 0.25 }, '切分模式已均分');
+  });
+  document.getElementById('btn-pat-reset')?.addEventListener('click', () => {
+    setAll({ ...DEFAULT_PARCEL_PATTERNS }, '切分模式已恢复默认配比');
+  });
+}
+
 function bindRight(): void {
   const bar = $('#rightbar');
 
@@ -1010,8 +1166,29 @@ function bindRight(): void {
       btn.addEventListener('click', () => {
         const k = btn.dataset.inner as 'tensor' | 'path';
         if (state.params.block.internalRoads === k) return;
-        state.params = resolveParams({ block: { ...state.params.block, internalRoads: k } });
+        setBlockParam({ internalRoads: k });
         segInner.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+        regenerate();
+      });
+    });
+  }
+
+  // ---- 建筑高度档位
+  //
+  // 一档 = 一组高度参数。选「混合」时 `apply` 是 undefined，一个值都不动 ——
+  // 这是"从低层切回混合"不丢手调值的唯一办法。
+  const segBp = document.querySelector<HTMLElement>('#seg-bpreset');
+  if (segBp) {
+    segBp.querySelectorAll<HTMLButtonElement>('button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const k = btn.dataset.bp as string;
+        const preset = BUILDING_PRESETS.find((b) => b.key === k);
+        if (!preset || !preset.apply) return;
+        state.buildingPreset = k;
+        const next = JSON.parse(JSON.stringify(state.params)) as TownParams;
+        Object.assign(next.building, preset.apply);
+        state.params = resolveParams(next);
+        buildRight();
         regenerate();
       });
     });
@@ -1029,22 +1206,28 @@ function bindRight(): void {
     state.plaza = on;
   });
   bool('#chk-parcel', (on) => {
-    state.params = resolveParams({ block: { ...state.params.block, parcelize: on } });
+    setBlockParam({ parcelize: on });
+    // 比重那组只在切分开启时对普通街区起作用，压暗状态要跟着开关走
+    document.getElementById('pat-group')?.classList.toggle('off', !on);
   });
   bool('#chk-zone-pad', (on) => {
-    state.params = resolveParams({ block: { ...state.params.block, zonePad: on } });
+    setBlockParam({ zonePad: on });
   });
   bool('#chk-zone-avoid', (on) => {
-    state.params = resolveParams({ block: { ...state.params.block, zoneAvoid: on } });
+    setBlockParam({ zoneAvoid: on });
   });
   bool('#chk-zone-bend', (on) => {
-    state.params = resolveParams({ block: { ...state.params.block, zoneAvoidBend: on } });
+    setBlockParam({ zoneAvoidBend: on });
   });
   bool('#chk-loop', (on) => {
-    state.params = resolveParams({ block: { ...state.params.block, serviceLoop: on } });
+    setBlockParam({ serviceLoop: on });
   });
 
   // ---- 参数滑杆
+  /** 档位预设覆盖到的字段：拖了其中任何一根，档位就不再是那一档了 */
+  const PRESET_KEYS = new Set<string>();
+  for (const b of BUILDING_PRESETS) for (const k of Object.keys(b.apply ?? {})) PRESET_KEYS.add(k);
+
   const applyParam = (el: HTMLInputElement) => {
     const g = el.dataset.pgroup as 'block' | 'building';
     const k = el.dataset.pkey as string;
@@ -1057,6 +1240,13 @@ function bindRight(): void {
       const sp = (g === 'block' ? BLOCK_SPECS : BUILDING_SPECS).find((x) => x.key === k);
       const shown = (state.params[g] as unknown as Record<string, number>)[k];
       val.textContent = `${shown}${sp?.unit ?? ''}`;
+    }
+    // 拖到档位管的那几个数 → 档位按钮全部松开，不假装还是"低层"
+    if (PRESET_KEYS.has(k) && state.buildingPreset !== 'custom') {
+      state.buildingPreset = 'custom';
+      document.querySelectorAll<HTMLButtonElement>('#seg-bpreset button').forEach((b) => {
+        b.classList.toggle('active', b.dataset.bp === state.buildingPreset);
+      });
     }
   };
   bar.addEventListener('input', (e) => {
@@ -1087,6 +1277,8 @@ function bindRight(): void {
     buildRight();
     regenerate();
   });
+
+  bindParcelPatterns();
 
   // ---- 种子
   const seedInput = $<HTMLInputElement>('#inp-seed');
@@ -1144,7 +1336,7 @@ function bindRight(): void {
       model.rebuild();
       view2d.draw();
       updateStats();
-      refreshHud();
+      refreshDiag();
       if (currentView === '3d') refresh3D();
     });
   };
@@ -1167,7 +1359,7 @@ function bindRight(): void {
     view2d.refreshRoadSelection();
     view2d.draw();
     updateStats();
-    refreshHud();
+    refreshDiag();
     if (currentView === '3d') refresh3D();
   };
   artery.addEventListener('change', () => commitArtery(Number(artery.value)));
@@ -1478,7 +1670,6 @@ function boot(): void {
   view2d.guideStrength = state.guideStrength;
   applyViewFlags();
   updateStats();
-  renderHudBody();
   syncHashSoon();
 
   const q = new URLSearchParams(location.search);

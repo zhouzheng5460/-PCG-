@@ -16,7 +16,6 @@ import { resolveParams } from '../src/town/params';
 import { buildScene } from '../src/scene/build';
 import { buildTownMeshes } from '../src/export/build3d';
 import {
-  HUD_GROUPS,
   LAYER_GROUPS,
   OVERLAY_GROUPS,
   defaultVisibility,
@@ -55,7 +54,7 @@ const scene = buildScene(model);
 
 // ---------------------------------------------------------------- ① 无孤儿
 const known = new Set<string>();
-for (const g of [...LAYER_GROUPS, ...OVERLAY_GROUPS, ...HUD_GROUPS]) for (const it of g.items) known.add(it.id);
+for (const g of [...LAYER_GROUPS, ...OVERLAY_GROUPS]) for (const it of g.items) known.add(it.id);
 
 const orphans = new Map<string, number>();
 const bump = (id: string) => {

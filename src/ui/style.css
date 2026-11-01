@@ -830,210 +830,14 @@ details.lyr-sub > summary:hover {
   padding-top: 4px;
 }
 
-/* ---------- HUD ---------- */
-/* 结论条：分数 + 三段色带 + 点名越界项。放在体检面板最上面，
-   回答"这版规则完善了没有"，比让用户自己数颜色点靠谱 */
-.hud-verdict {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 9px 10px;
-  margin-bottom: 8px;
+/* 高级参数折叠区：比普通子折叠再弱一档 —— 它默认收起，
+   要让用户看得出"这里有东西，但不重要" */
+details.adv-sub {
+  margin-top: 12px;
 }
-.hud-verdict.ok {
-  border-color: rgba(79, 157, 104, 0.42);
-}
-.hud-verdict.warn {
-  border-color: rgba(216, 161, 60, 0.42);
-}
-.hud-verdict.bad {
-  border-color: rgba(196, 85, 63, 0.5);
-}
-.vd-top {
-  display: flex;
-  align-items: baseline;
-  gap: 3px;
-}
-.vd-top b {
-  font-size: 23px;
-  font-weight: 650;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-.hud-verdict.ok .vd-top b {
-  color: #6fc189;
-}
-.hud-verdict.warn .vd-top b {
-  color: #e2b055;
-}
-.hud-verdict.bad .vd-top b {
-  color: #d9694f;
-}
-.vd-w {
-  font-size: 10px;
-  color: var(--text-dim);
-}
-.vd-word {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--text-dim);
-}
-.vd-bar {
-  display: flex;
-  height: 4px;
-  border-radius: 2px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.07);
-  margin: 7px 0 5px;
-}
-.vd-bar i {
-  display: block;
-  height: 100%;
-}
-.vd-bar i.ok {
-  background: #4f9d68;
-}
-.vd-bar i.warn {
-  background: #d8a13c;
-}
-.vd-bar i.bad {
-  background: #c4553f;
-}
-.vd-num {
-  font-size: 10px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-.vd-list {
-  font-size: 10px;
-  color: #d9694f;
-  margin-top: 3px;
-  line-height: 1.45;
-}
-
-.hud {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 9px 10px;
-  margin-bottom: 8px;
-}
-.hud:last-child {
-  margin-bottom: 0;
-}
-.hud h4 {
-  margin: 0 0 7px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  color: #b9c0c9;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.hud h4 .tag {
-  margin-left: auto;
-  font-size: 9.5px;
-  font-weight: 400;
-  color: var(--text-dim);
-  letter-spacing: 0;
-}
-.hud-metric {
-  display: grid;
-  grid-template-columns: 8px 1fr auto;
-  align-items: baseline;
-  gap: 0 6px;
-  padding: 3px 0;
-  border-top: 1px dashed rgba(255, 255, 255, 0.06);
-  font-size: 11px;
-}
-.hud-metric:first-of-type {
-  border-top: 0;
-}
-.hud-metric .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #6b7280;
-  align-self: center;
-}
-.hud-metric.ok .dot {
-  background: #4f9d68;
-  box-shadow: 0 0 6px rgba(79, 157, 104, 0.55);
-}
-.hud-metric.warn .dot {
-  background: #d8a13c;
-  box-shadow: 0 0 6px rgba(216, 161, 60, 0.55);
-}
-.hud-metric.bad .dot {
-  background: #c4553f;
-  box-shadow: 0 0 6px rgba(196, 85, 63, 0.55);
-}
-.hud-metric .lb {
-  color: var(--text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.hud-metric .vl {
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-  font-size: 11px;
-}
-.hud-metric .note {
-  grid-column: 2 / -1;
-  font-size: 9.5px;
-  line-height: 1.45;
-  color: #6f7783;
-  margin-top: 1px;
-}
-
-.hud-bar {
-  display: flex;
-  height: 7px;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--line);
-  margin-bottom: 7px;
-}
-.hud-bar i {
-  display: block;
-  height: 100%;
-}
-.hud-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.hud-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10.5px;
-  color: var(--text-dim);
-}
-.hud-row .sw {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  flex: none;
-}
-.hud-row .lb {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.hud-row .vl,
-.hud-row .pc {
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
-}
-.hud-row .pc {
-  width: 44px;
-  text-align: right;
-  opacity: 0.75;
+details.adv-sub > summary {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 8px;
 }
 
 /* 规模滑杆那一行：数字框窄一点，别把滑杆挤没 */
@@ -1048,4 +852,74 @@ details.lyr-sub > summary:hover {
 .range-inline .val {
   flex: none;
   min-width: 46px;
+}
+
+/* ---------- 地块切分模式比重 ---------- */
+/*
+ * 一条堆叠条 + 五行滑杆。
+ *
+ * 为什么不是五个数字框：这五个值是**相对权重**，单看 0.28 读不出"占三成"，
+ * 而用户真正想知道的就是"全城按什么比例分配"。堆叠条直接把归一化后的结果
+ * 画出来，拖滑杆时条子跟着变，不用心算。
+ */
+.pat-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  margin-bottom: 9px;
+}
+.pat-bar i {
+  display: block;
+  height: 100%;
+  transition: width 0.12s ease-out;
+}
+.pat-bar i.zero {
+  /* 0% 的段留一条发丝线，否则用户看不出这个模式还在列表里 */
+  min-width: 0;
+}
+/* 五种模式各一个色标：堆叠条的分段和下面的行首小方块共用 */
+/*
+ * 色标：五种切法要能一眼分开，所以先按色相拉开距离。
+ * 「平行条带」原来用 #b98752，和强调色的橙几乎同族，堆叠条上前两段和最后一段
+ * 分不清 —— 改成偏冷的褐灰，把最亮的橙留给「张量场」（它是这套切分的主打）。
+ */
+.k-ortho { background: #6f7d8c; }
+.k-strip { background: #8f7752; }
+.k-diag  { background: #8b7bb8; }
+.k-free  { background: #5c9a86; }
+.k-field { background: var(--accent); }
+
+.pat-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pat-row .swatch {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.pat-row label {
+  flex: 0 0 auto;
+  min-width: 54px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.pat-row input[type="range"] {
+  flex: 1 1 auto;
+}
+.pat-row .val {
+  min-width: 38px;
+}
+/* 「街区切成小地块」关掉时这一组对普通街区不起作用，压暗但不锁死 */
+.pat-group.off {
+  opacity: 0.45;
+}
+.pat-group.off:hover {
+  opacity: 0.75;
 }
