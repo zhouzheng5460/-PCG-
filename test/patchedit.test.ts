@@ -123,9 +123,13 @@ const others0 = othersFingerprint(base);
 
 // ---------------------------------------------------------------- ③ 改切分块数
 {
-  // 探针地块切成 8 块：目标面积 = 自身面积 / 8。
-  // 自动路径的切分深度封顶 2 刀（4 块），手动指定才放开到 3 刀（8 块）——
-  // 所以这里必须用 8 来验，用 4 会和自动结果撞上，看不出接线通没通。
+  // 探针地块切成 16 块：目标面积 = 自身面积 / 16。
+  //
+  // 为什么是 16 而不是更小的数：切分现在按**沿街面宽**排布（`frontagePartition`），
+  // 自动路径的块数 ≈ 街区面宽 / 26 m，一间住宅街区本来就有 8~11 个地块。
+  // 手动档要验的是"比自动更碎"，所以目标块数得明显多于自动值 —— 8 块反而
+  // 和自动结果撞上（切完 8 栋 < 自动 11 栋），看不出接线通没通。
+  // 16 块 ≈ 每块 17 单位²（约 830 m²），是个住宅院落的真实尺度。
   const p = base.patches.find((q) => patchKey(q) === probeKey)!;
   let aSum = 0;
   const ring = Array.from(p.shape);
@@ -134,11 +138,11 @@ const others0 = othersFingerprint(base);
     aSum += ring[i].x * q.y - q.x * ring[i].y;
   }
   const areaU = Math.abs(aSum) / 2;
-  const target = areaU / 8;
+  const target = areaU / 16;
 
   const m = run(new Map([[probeKey, { parcelTargetA: target }]]));
   const b = builtOf(m, probeKey)!;
-  ok(b.count > b0.count, `切成 8 块后栋数变多（${b0.count} → ${b.count}）`);
+  ok(b.count > b0.count, `切成 16 块后栋数变多（${b0.count} → ${b.count}）`);
   ok(othersFingerprint(m) === others0, '别的地块切分不受影响');
 
   // 目标面积给得越大 → 块数越少，直到 1 块

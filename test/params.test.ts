@@ -141,15 +141,20 @@ for (const mode of ['tensor', 'path'] as const) {
     const greenA = sc.surfaces
       .filter((s) => s.mat === 'grass' || s.mat === 'grassDark')
       .reduce((a, s) => a + Math.abs(area(s.ring)), 0);
-    // 地面区块的内部划分：草地块 / 步道块都算"分过区的地面"
-    const greenPatch = sc.surfaces.filter((s) => s.name === 'green_patch').length;
-    const walk = sc.surfaces.filter((s) => s.name === 'pave_walk').length;
+    // 地面区块的内部划分：草地块 / 硬地格都算"分过区的地面"
+    //
+    // 名字换成 `cell_*` 是本轮改的：地面不再是"外接矩形九宫格 + 各种叠加层"，
+    // 而是"地块递归二分出来的互斥格 + 每格一个角色"（见 modern.ts 的 groundPlan）。
+    // 于是同一块地不可能再铺两层 —— 面积占比也从"可能 >1 的叠层求和"变成了
+    // 真实的面积比（这也是下面几个阈值跟着调的原因）。
+    const greenPatch = sc.surfaces.filter((s) => s.name === 'cell_green').length;
+    const cells = sc.surfaces.filter((s) => s.name.startsWith('cell_')).length;
     return {
       solids: sc.solids.length,
       blocks: m.patches.filter((p) => p.withinCity).length,
       green: greenA / Math.max(blockA, 1),
       greenPatch,
-      walk,
+      cells,
     };
   };
 
@@ -159,17 +164,17 @@ for (const mode of ['tensor', 'path'] as const) {
 
   const off = count(true, { parcelize: false });
   // 关掉切分之后，商业 / 市政地块不再是"一整片硬质"了 —— 街区级规划里
-  // 同样跑一遍地面分区（planCommercial / planCivic 的 pavingPartition），
+  // 同样跑一遍地面规划（planCommercial / planCivic 的 groundPlan），
   // 所以"有没有绿化"不再是"切不切分"的差别，两种模式应当同一量级。
-  ok(fine.green > 0.5, `parcel：切分时绿地占比 ${fine.green.toFixed(2)}`);
-  ok(off.green > 0.5, `parcel：不切分时绿地占比 ${off.green.toFixed(2)}`);
+  ok(fine.green > 0.35, `parcel：切分时绿地占比 ${fine.green.toFixed(2)}`);
+  ok(off.green > 0.35, `parcel：不切分时绿地占比 ${off.green.toFixed(2)}`);
   ok(fine.green > off.green * 0.75, `parcel：切分后绿地不低于不切分（开 ${fine.green.toFixed(2)} vs 关 ${off.green.toFixed(2)}）`);
-  // 地面区块是真的切分出来的：草地块与步道块都要有，不能只有一整片铺装
+  // 地面单元格是真的切分出来的：绿地格要有，而且格的总数远多于地块数
   ok(fine.greenPatch > 40, `parcel：切分出 ${fine.greenPatch} 个草地块`);
-  ok(fine.walk > 5, `parcel：切分出 ${fine.walk} 块内部步道`);
+  ok(fine.cells > 200, `parcel：地面切成 ${fine.cells} 个互斥格`);
   ok(fine.solids / fine.blocks >= 2, `parcel：每个街区平均 ${(fine.solids / fine.blocks).toFixed(1)} 栋楼（关 ${(off.solids / off.blocks).toFixed(1)} 栋）`);
   console.log(
-    `  parcelize        22 m → 楼 ${fine.solids} / 草面×地块 ${fine.green.toFixed(2)}   关 → 楼 ${off.solids} / 草面×地块 ${off.green.toFixed(2)}（>1 是铺装层互相重叠，只看相对值）`
+    `  parcelize        22 m → 楼 ${fine.solids} / 绿地占比 ${fine.green.toFixed(2)} / 格 ${fine.cells}   关 → 楼 ${off.solids} / 绿地占比 ${off.green.toFixed(2)}`
   );
 }
 

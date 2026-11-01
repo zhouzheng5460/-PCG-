@@ -6,6 +6,9 @@
 //
 // 断言分两类：
 //   ① 不变量：任何非雨棚体量，进深 < 8 m 时高度必须 ≤ 1 层（1.0 单位 ≈ 7 m）；
+//      "进深"取**最小外接矩形的短边**，不是内切半径 2A/P —— 后者对正方形
+//      只有半边长，会把一栋 14×12 m 的正常房子算成"进深 6.5 m"。测量口径
+//      改了之后，以前被误降级的 52% 住宅楼会回到正常体量，这条断言才有意义。
 //   ② 不变量：任何非雨棚体量，最小内角 ≥ 62°（倒角闸保证），容差 1°。
 // 这两条一旦破，说明有多少条生成路径绕过了 addSolid 上的那道闸。
 
@@ -56,6 +59,38 @@ function fit(ring: Pt[]) {
   return { inr, minAng };
 }
 
+/**
+ * 进深（m）= 最小外接矩形的短边。
+ *
+ * 与 `src/town/modern.ts` 的 `shortSideM` 同一个口径（这里独立实现一遍，
+ * 测试不该直接引用被测代码的判据，否则判据写错时两边一起错）。
+ */
+function shortSideM(ring: Pt[]): number {
+  const k = ring.length;
+  let bi = 0;
+  let bl = 0;
+  for (let i = 0; i < k; i++) {
+    const L = Pt.distance(ring[i], ring[(i + 1) % k]);
+    if (L > bl) {
+      bl = L;
+      bi = i;
+    }
+  }
+  if (bl < 1e-9) return 0;
+  const a = ring[bi];
+  const b = ring[(bi + 1) % k];
+  const ux = (b.x - a.x) / bl;
+  const uy = (b.y - a.y) / bl;
+  let v0 = Infinity;
+  let v1 = -Infinity;
+  for (const p of ring) {
+    const dv = -(p.x - a.x) * uy + (p.y - a.y) * ux;
+    if (dv < v0) v0 = dv;
+    if (dv > v1) v1 = dv;
+  }
+  return Math.min(bl, v1 - v0) * 7;
+}
+
 let total = 0;
 let paper = 0;
 let acute = 0;
@@ -81,9 +116,10 @@ for (const seed of [682063530, 991337, 4455661]) {
     total++;
     kinds.add(s.kind);
     // ① 薄 + 高 = 纸片楼
-    if (f.inr * 7 < MIN_DEPTH_M && s.h > 1.0 + 1e-6) {
+    const dep = shortSideM(s.ring);
+    if (dep < MIN_DEPTH_M && s.h > 1.0 + 1e-6) {
       paper++;
-      if (paper <= 5) console.log(`  纸片：${s.name} 进深 ${(f.inr * 7).toFixed(1)}m 高 ${s.h.toFixed(2)}u`);
+      if (paper <= 5) console.log(`  纸片：${s.name} 进深 ${dep.toFixed(1)}m 高 ${s.h.toFixed(2)}u`);
     }
     // ② 内角过尖 = 锐角楼
     if (f.minAng < MIN_ANGLE - 1) {

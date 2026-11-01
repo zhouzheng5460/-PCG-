@@ -23,18 +23,28 @@ import type { PathFeature, PropFeature } from '../scene/types';
 import type { RoadEdge, RoadNet } from '../road/system';
 import { visibleSpan } from '../road/system';
 import { u } from '../road/spec';
-import { RAIL_WALK, addRail } from './rails';
+import { RAIL_WALK, addHedgeRun, addRail } from './rails';
 
 /**
- * 一段的长度 / 开口宽度（米）。
+ * 混排节奏（本轮按用户意见改）：
  *
- * 这两个数不是照抄 site-studio 的 18 m / 4 m —— 那份实现里的"边"是整条园区道路，
- * 而这里的边是**路口与路口之间**的一段，arterial 平均只有 20 m 长。
- * 按 18 m 排，减掉两端各 2.5 m 净距就一段都放不下（实测全城只排出 24 段）。
- * 所以按本项目的边长度重算成 9 m / 3.5 m：20 m 的边正好"一段栏杆 + 一个开口"。
+ * 用户核对意见（图 1）："绿篱应该和围栏在同一个路径上被克隆，按间距混合间隔
+ * 摆放，这里路径是指地块的绿地与人行道之间的地面围线"。
+ *
+ * 旧做法是"9 m 栏杆 + 3.5 m 空口"循环，而绿篱在别处 —— 它是地块里种植池
+ * 沿边内缩的那一圈，跟这条围线根本不是同一条线。于是从空中看：围栏一条线、
+ * 绿篱另一条线，两条线一错开，就读成"绿篱没跟上围栏"。
+ *
+ * 现在改成**一条线、两种构件交替**：
+ *   · 路径仍然是推导出来的那条（人行道外沿 / 绿化带靠地块的一侧），零横向偏移；
+ *   · 沿这条线按 `MODULE_M` 切模块，模块内交替「一段栏杆 / 一段绿篱」，
+ *     每 5 个模块留 1 个空口（4 段栏杆 : 4 段绿篱 : 2 个空口的比例感还在，
+ *     但不再是"一长溜栏杆 + 一长溜绿篱"，而是逐段混合）；
+ *   · 空口是必须的：不开口等于把沿街店面全封死。
  */
-const RUN_M = 9;
-const GAP_M = 3.5;
+const MODULE_M = 6;
+/** 每 N 个模块留一个空口（≈20%） */
+const OPEN_EVERY = 5;
 /** 路口净距（米）。site-studio 的 JUNCTION_CLEAR 是 1.5 m，那是人行尺度；
     车行路口要留出缘石转角，这里取 2.5 m */
 const JUNCTION_CLEAR_M = 2.5;
@@ -91,7 +101,7 @@ export function roadsideRailings(net: RoadNet): RailingsResult {
     const clear = u(JUNCTION_CLEAR_M);
     const s0 = t0 * e.len + clear;
     const s1 = t1 * e.len - clear;
-    if (s1 - s0 < u(RUN_M) * 0.55) continue;
+    if (s1 - s0 < u(MODULE_M) * 0.55) continue;
     // 护栏立地块边缘（人行道外沿 / 绿化带靠地块的一侧），不在人行道上
     const back = u(EDGE_SETBACK_M);
     const edgeL = e.vgL > 0.05 ? e.insetL - e.vgL : e.insetL - e.swL;
@@ -102,28 +112,44 @@ export function roadsideRailings(net: RoadNet): RailingsResult {
     if (walkOn(e, false)) plan.push({ e, left: false, s0, s1, d: dR });
   }
 
-  const runLen = u(RUN_M);
-  const gapLen = u(GAP_M);
+  const runLen = u(MODULE_M);
   let n = 0;
+  let moduleIdx = 0;
 
   for (const { e, s0, s1, d } of plan) {
     if (n >= MAX_RUNS) break;
     const nx = -e.dir.y;
     const ny = e.dir.x;
     const at = (s: number) => new Pt(e.a.x + e.dir.x * s + nx * d, e.a.y + e.dir.y * s + ny * d);
-    for (let s = s0; s + u(RUN_M * 0.55) <= s1; s += runLen + gapLen) {
+    for (let s = s0; s + u(MODULE_M * 0.55) <= s1; s += runLen) {
       // 最后一段可能放不满，就按剩下的长度收短 —— 留一个缺口比伸进路口强
       const len = Math.min(runLen, s1 - s);
-      addRail({
-        pts: [at(s), at(s + len)],
-        namePrefix: `rail_${e.cls}_${n}`,
-        group: 'street/guardrail',
-        y: 0.05,
-        spec: RAIL_WALK,
-        paths,
-        props,
-      });
-      n++;
+      const m = moduleIdx % OPEN_EVERY;
+      // 4 段栏杆 / 4 段绿篱 / 2 段空口 的节奏，落在 **同一条围线** 上
+      if (m === OPEN_EVERY - 1) {
+        // 空口：沿街店面的出入口，不摆
+      } else if (m % 2 === 0) {
+        addRail({
+          pts: [at(s), at(s + len)],
+          namePrefix: `rail_${e.cls}_${n}`,
+          group: 'street/guardrail',
+          y: 0.05,
+          spec: RAIL_WALK,
+          paths,
+          props,
+        });
+        n++;
+      } else {
+        // 绿篱：和栏杆同一个游标、同一条偏移线 —— 这只是"同一道边界换了种构件"，
+        // 不是另起一条绿带。块高 0.45 m，栏杆 1.1 m，两者前后读得出层次。
+        addHedgeRun({
+          pts: [at(s), at(s + len)],
+          namePrefix: `railhedge_${n}`,
+          group: 'street/guardrail',
+          props,
+        });
+      }
+      moduleIdx++;
       if (n >= MAX_RUNS) break;
     }
   }

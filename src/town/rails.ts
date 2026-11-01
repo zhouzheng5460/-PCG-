@@ -62,12 +62,20 @@ export const RAIL_PARK: RailSpec = {
   mat: 'fence',
 };
 
-/** 沿折线按固定弧长取点（含起点）。用来布立柱。 */
+/**
+ * 沿折线按固定弧长取点（含起点）。用来布立柱。
+ *
+ * **末端必须收一根柱**：杆长很少正好是柱距的整数倍（一段护栏 2.6 m、柱距 2.2 m，
+ * 只按 pitch 摆就只有起点一根柱），末尾一段双横杆悬空 —— 三维里读成"栏杆缺了
+ * 一根竖杆"，用户截图里圈的就是这个缺口。所以只要末端离最后一根柱超过
+ * 0.15 m（约 1 m），就在**折线的终点**补一根，让每段栏杆都是闭合的框。
+ */
 function postsAlong(pts: Pt[], pitch: number): Pt[] {
   const out: Pt[] = [];
   if (pts.length < 2 || pitch <= 1e-9) return out;
   let acc = 0;
   let next = 0;
+  let lastAcc = 0;
   for (let i = 0; i + 1 < pts.length; i++) {
     const a = pts[i];
     const b = pts[i + 1];
@@ -76,9 +84,13 @@ function postsAlong(pts: Pt[], pitch: number): Pt[] {
     while (next <= acc + L + 1e-9) {
       const t = (next - acc) / L;
       out.push(new Pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t));
+      lastAcc = next;
       next += pitch;
     }
     acc += L;
+  }
+  if (lastAcc > 0 || out.length === 0) {
+    if (acc - lastAcc > pitch * 0.14) out.push(pts[pts.length - 1]);
   }
   return out;
 }
@@ -143,8 +155,15 @@ export interface HedgeSpec {
   widthM: number;
 }
 
-/** 低矮绿篱：参考图里"一排分开的矮方块"，块与块之间必须留缝才读得出是绿篱 */
-export const HEDGE_LOW: HedgeSpec = { blockM: 1.5, gapM: 0.35, heightM: 0.45, widthM: 0.9 };
+/**
+ * 绿篱：参考图里"一排分开的方块"，块与块之间必须留缝才读得出是绿篱。
+ *
+ * 高度按用户口径抬到 **1.1 m，与栏杆齐平**（原来 0.45 m，站在 1.1 m 的栏杆旁边
+ * 矮一头，读起来是"草皮"不是"绿篱"）。平面尺寸不变（1.5 × 0.9 m）——
+ * 高度单独缩放（见 `PropFeature.hz`），否则等比放大后一块绿篱宽 2.2 m，
+ * 直接顶掉半条人行道。
+ */
+export const HEDGE_LOW: HedgeSpec = { blockM: 1.5, gapM: 0.35, heightM: 1.1, widthM: 0.9 };
 
 /**
  * 沿折线铺一条低矮绿篱。
@@ -184,8 +203,10 @@ export function addHedgeRun(o: {
         kind: 'hedge',
         at,
         rot: ang,
-        // hedge 的基准就是 1.5 m 长 / 0.9 m 宽 / 0.45 m 高，这里只按高度缩放
-        scale: spec.heightM / 0.45,
+        // `scale` 只管**平面**尺寸（基准块 1.5 m 长 / 0.9 m 宽），
+        // 高度走 `hz` 单独缩放 —— 否则想长到 1.1 m 高就得把宽度一起放大 2.4 倍。
+        scale: spec.widthM / 0.9,
+        hz: spec.heightM / 0.45,
         seed: (k * 6151) % 9999,
       });
       next += pitch;
