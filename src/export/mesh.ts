@@ -32,11 +32,24 @@ export interface Primitive {
  */
 const DEGEN_AREA2 = 1e-9;
 
-export function triangulate(ring: Pt[]): number[] {
+/**
+ * 三角化一个面（可选洞）。
+ *
+ * PRD §3 P0：earcut 的 `holeIndices` 必须真正用上 —— 原来写死 `undefined`，
+ * 洞环只能被丢掉，中庭 / 环路 / 停车岛在 3D 里永远是实心。
+ * 顶点按 [外环…, 洞1…, 洞2…] 拼接，holeIndices 记录每个洞的起始索引。
+ */
+export function triangulate(ring: Pt[], holes: Pt[][] = []): number[] {
   if (ring.length < 3) return [];
   const flat: number[] = [];
   for (const p of ring) flat.push(p.x, p.y);
-  const idx = earcut(flat, undefined, 2);
+  const holeIndices: number[] = [];
+  for (const h of holes) {
+    if (h.length < 3) continue;
+    holeIndices.push(flat.length / 2);
+    for (const p of h) flat.push(p.x, p.y);
+  }
+  const idx = earcut(flat, holeIndices.length > 0 ? holeIndices : undefined, 2);
   const out: number[] = [];
   for (let i = 0; i < idx.length; i += 3) {
     const a = idx[i];
@@ -126,7 +139,8 @@ export function flatPolygon(
   y: number,
   name: string,
   group: string,
-  color: [number, number, number]
+  color: [number, number, number],
+  holes: Pt[][] = []
 ): Primitive | null {
   let clean = ensureCCW(dedupeRing(ring));
   if (clean.length < 3) return null;
@@ -137,7 +151,21 @@ export function flatPolygon(
     clean = ensureCCW(dedupeRing(healed));
     if (clean.length < 3 || selfIntersects(clean)) return null;
   }
-  const idx = triangulate(clean);
+  // 洞也要过同样的自交 / 去重处理，否则三角化会跨洞画出"盖住中庭"的三角形
+  const cleanHoles: Pt[][] = [];
+  for (const h of holes) {
+    let hh = ensureCCW(dedupeRing(h));
+    if (hh.length < 3) continue;
+    if (selfIntersects(hh)) {
+      const healed = healRing(hh);
+      if (!healed) continue;
+      hh = ensureCCW(dedupeRing(healed));
+      if (hh.length < 3 || selfIntersects(hh)) continue;
+    }
+    cleanHoles.push(hh);
+  }
+
+  const idx = triangulate(clean, cleanHoles);
   if (idx.length === 0) return null;
 
   const positions: number[] = [];
@@ -145,6 +173,12 @@ export function flatPolygon(
   for (const p of clean) {
     positions.push(p.x, y, p.y);
     normals.push(0, 1, 0);
+  }
+  for (const h of cleanHoles) {
+    for (const p of h) {
+      positions.push(p.x, y, p.y);
+      normals.push(0, 1, 0);
+    }
   }
   return { name, group, positions, normals, indices: idx, color };
 }

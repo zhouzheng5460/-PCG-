@@ -49,6 +49,8 @@ import {
 // 只留 `diagnose`：左栏每行图层后面的数字靠它数。HUD 那个"场景体检"面板已删
 // （用户核对意见：面板上的结论没人看，反而把显示控制挤出首屏）。
 import { type Diagnostics, diagnose } from './hud';
+import { mountPlannerHud, type PlannerHudState } from './planner-hud';
+import type { PlanningMode } from '../scene/planner-bridge';
 
 /** 街网形态的中文名（与 grid.ts 的 LayoutKind 一一对应） */
 const LAYOUT_LABEL: Record<LayoutKind, string> = {
@@ -103,6 +105,13 @@ interface State {
   layout: LayoutKind;
   /** 停车配比：界面上不再提供预设，保留字段以免打乱快照与模型契约 */
   parkingLevel: ParkLevel;
+  /**
+   * 规划模式（R8）：
+   *   · legacy  —— 全部走现有链路（默认，行为不变）
+   *   · planner —— industrial / multi_family / retail 三类由 Planner 接管
+   *   · shadow  —— 渲染仍是 legacy，Planner 的方案叠成红色虚线
+   */
+  planningMode: PlanningMode;
   params: TownParams;
   /** 图层显隐（scene/layers.ts 的 id → 可见） */
   vis: Record<string, boolean>;
@@ -136,6 +145,7 @@ const state: State = {
   zoneThreshold: 0.35,
   layout: 'tensor',
   parkingLevel: 'normal',
+  planningMode: 'legacy',
   params: defaultParams(),
   vis: defaultVisibility(),
   patchEdits: new Map(),
@@ -277,13 +287,54 @@ function syncPatchSelection(): void {
   }
 }
 
-/** 统一的 3D 刷新入口：楼高 + 图层过滤一起传，避免各处漏传 */
+/** 统一的 3D 刷新入口：楼高 + 图层过滤 + 规划模式一起传，避免各处漏传 */
 function refresh3D(): void {
   if (currentView !== '3d' || !view3d) return;
   view3d.setModel(model, {
     heightScale: state.heightScale,
     layers: makeFilter(state.vis),
+    planningMode: state.planningMode,
   });
+}
+
+// ---------------------------------------------------------------- R8 · 规划模式
+
+/** HUD 的渲染句柄（boot 里挂上） */
+let renderPlannerHud: ((st: PlannerHudState) => void) | null = null;
+
+/**
+ * 切换规划模式。
+ *
+ * 关键点：**只改渲染链，不重跑城市生成**。
+ * Planner 的方案是在 `buildScene` 里按地块现算的（SiteContext → Candidates →
+ * realizeSitePlan），所以切模式只是换一个 Scene 装配方式，不需要重新生成城市。
+ */
+function applyPlanningMode(mode: PlanningMode): void {
+  state.planningMode = mode;
+  document.querySelectorAll<HTMLButtonElement>('.mode-btn').forEach((b) =>
+    b.classList.toggle('active', b.dataset.mode === mode)
+  );
+  view2d.setSceneOptions({ planningMode: mode });
+  view2d.draw();
+  if (currentView === '3d') refresh3D();
+  updateStats();
+  updatePlannerHud();
+  const n = view2d.plannerBundle?.stats.covered ?? 0;
+  toast(
+    mode === 'legacy'
+      ? 'Legacy：全部走现有链路'
+      : mode === 'planner'
+        ? `Planner：接管 ${n} 块地（工业 / 多层住宅 / 零售）`
+        : `Shadow：Planner 方案叠在 legacy 之上（${n} 块）`
+  );
+}
+
+/** 刷新 Debug HUD：显示选中地块（或全局摘要）的 Planner 报告 */
+function updatePlannerHud(): void {
+  if (!renderPlannerHud) return;
+  const bundle = view2d.plannerBundle ?? null;
+  const report = selectedPatchKey ? bundle?.reports.get(selectedPatchKey) ?? null : null;
+  renderPlannerHud({ mode: state.planningMode, report, bundle });
 }
 
 function regenerate(): void {
@@ -295,6 +346,7 @@ function regenerate(): void {
     if (currentView === '3d') refresh3D();
     updateStats();
     refreshDiag();
+    updatePlannerHud();
     syncHashSoon();
   } catch (e) {
     toast(`生成失败：${(e as Error).message}`, true);
@@ -310,6 +362,7 @@ function rebuildGeometry(): void {
     if (currentView === '3d') refresh3D();
     updateStats();
     refreshDiag();
+    updatePlannerHud();
   } catch (e) {
     toast(`重建失败：${(e as Error).message}`, true);
     view2d.draw();
@@ -337,7 +390,10 @@ function updateGuides(guides: FieldGuide[]): void {
 
 function updateStats(): void {
   const s = model.stats();
-  const parts = [`${s.patches} 地块`, `${s.buildings} 建筑`];
+  // 建筑数取**场景**里的实际值：Planner 模式下场景和 model 不是一回事
+  // （model 统计的是 legacy 生成的建筑），显示 model 的数字会让人以为没生效。
+  const nBuildings = view2d?.sceneBuildingCount ?? s.buildings;
+  const parts = [`${s.patches} 地块`, `${nBuildings} 建筑`];
   if (s.blocked > 0) parts.push(`<span style="color:#c4553f">${s.blocked} 禁建</span>`);
 
   // 第二行是"场景指纹"：同一座城 = 同一组（种子 + 主开关 + 手画物件）。
@@ -1446,13 +1502,15 @@ function doExport(): void {
     const prims = buildTownMeshes(model, {
       heightScale: state.heightScale,
       layers: makeFilter(state.vis),
+      // 导出所见即所得：当前是哪个规划模式就导出哪个
+      planningMode: state.planningMode,
     });
     const glb = exportGLB(prims, 'TownForge');
     const blob = new Blob([glb.bytes as unknown as BlobPart], { type: 'model/gltf-binary' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `town_${state.nPatches}_${state.seed}.glb`;
+    a.download = `town_${state.nPatches}_${state.seed}_${state.planningMode}.glb`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     toast(`已导出 ${(glb.bytes.byteLength / 1024 / 1024).toFixed(2)} MB · ${glb.triangles} 三角形 · ${glb.meshes} 网格`);
@@ -1659,6 +1717,7 @@ function boot(): void {
       selectedPatchKey = p ? patchKey(p) : null;
       buildRight();
       if (selectedPatchKey) $('#rightbar').scrollTop = 0;
+      updatePlannerHud();
     },
     onStatus: (text) => {
       $('#hint').textContent = text;
@@ -1708,6 +1767,18 @@ function boot(): void {
     btn.addEventListener('click', () => switchView(btn.dataset.view as '2d' | '3d'));
   });
   $('#btn-export').addEventListener('click', doExport);
+
+  // ---- R8 · 规划模式
+  renderPlannerHud = mountPlannerHud($('#planner-hud'));
+  document.querySelectorAll<HTMLButtonElement>('.mode-btn').forEach((btn) => {
+    btn.addEventListener('click', () => applyPlanningMode(btn.dataset.mode as PlanningMode));
+  });
+  // URL 参数 ?mode=planner / ?mode=shadow（自动化截图 / 手测用）
+  {
+    const m = new URLSearchParams(location.search).get('mode');
+    if (m === 'planner' || m === 'shadow' || m === 'legacy') applyPlanningMode(m);
+    else updatePlannerHud();
+  }
 
   document.addEventListener('keydown', (e) => {
     const tag = (document.activeElement?.tagName ?? '').toLowerCase();

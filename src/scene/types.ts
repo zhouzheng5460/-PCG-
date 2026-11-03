@@ -10,6 +10,13 @@ export interface SurfaceFeature {
   /** 分组路径，导出后是 glTF 节点名，供 DCC 里整体选中 */
   group: string;
   ring: Pt[];
+  /**
+   * 洞（中庭 / 环路 / 停车岛 / 中央绿地）。
+   *
+   * PRD §3 P0 的落点：面的唯一结构是「外环 + 洞」。留成可选是为了让
+   * 现有两百多处 `addSurface(ring)` 不用一次性改完 —— 不传就等于没有洞。
+   */
+  holes?: Pt[][];
   mat: MatKey;
   /** 高度偏移，用来解决共面 z-fighting；语义上代表"这一层比地面高多少" */
   y: number;
@@ -167,6 +174,21 @@ export interface Scene {
   paths: PathFeature[];
   lots: LotInfo[];
   stats: SceneStats;
+
+  /**
+   * shadow 模式专用：Planner 的方案叠在 legacy 之上（2D 画红色虚线轮廓）。
+   * 只有 planningMode === 'shadow' 时才有内容。
+   */
+  overlay?: {
+    solids: SolidFeature[];
+    surfaces: SurfaceFeature[];
+  };
+
+  /**
+   * Planner 模式的逐地块报告（R8 Debug HUD 用）。
+   * legacy 模式下为空 —— 前端据此判断"现在到底跑的是哪条链"。
+   */
+  planner?: import('./planner-bridge').PlannerBundle;
 }
 
 export function emptyScene(): Scene {

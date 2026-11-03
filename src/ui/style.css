@@ -923,3 +923,102 @@ details.adv-sub > summary {
 .pat-group.off:hover {
   opacity: 0.75;
 }
+
+/* ---------------------------------------------------------------- R8 · 规划模式切换 */
+.modes {
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  padding: 2px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  margin-left: 10px;
+}
+.mode-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 5px 11px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  letter-spacing: 0.02em;
+}
+.mode-btn.active {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.mode-btn:hover:not(.active) {
+  color: var(--text);
+}
+/* planner / shadow 是"另一条链"，用一点暖色提示当前不在 legacy 上 */
+.mode-btn.active[data-mode='planner'] {
+  background: #2b3a2f;
+  color: #cfe6c8;
+}
+.mode-btn.active[data-mode='shadow'] {
+  background: #3a2b28;
+  color: #f0c4b4;
+}
+
+/* ---------------------------------------------------------------- R8 · Planner Debug HUD */
+#planner-hud {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  pointer-events: none;
+  z-index: 6;
+}
+.planner-hud {
+  background: rgba(16, 18, 22, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 11px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-dim);
+  min-width: 210px;
+  font-variant-numeric: tabular-nums;
+}
+.planner-hud .hud-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+.planner-hud .hud-k {
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+.planner-hud .hud-v {
+  color: var(--text);
+  text-align: right;
+}
+.planner-hud .hud-mode .hud-v {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.planner-hud .hud-mode .hud-planner {
+  color: #a8dc9a;
+}
+.planner-hud .hud-mode .hud-shadow {
+  color: #f0a892;
+}
+.planner-hud .hud-mode .hud-legacy {
+  color: var(--text-dim);
+}
+.planner-hud .hud-warn {
+  color: #f2c14e;
+}
+.planner-hud .hud-sub {
+  color: var(--text-dim);
+  opacity: 0.7;
+  padding-left: 2px;
+}
+.planner-hud .hud-note {
+  color: var(--text-dim);
+  opacity: 0.8;
+  margin-top: 3px;
+  max-width: 260px;
+  white-space: normal;
+}

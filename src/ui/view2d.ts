@@ -10,6 +10,7 @@ import { roadBand } from '../render/road';
 import { buildRoadNet, type RoadEdge, type RoadNet } from '../road/system';
 import { edgeKey } from '../town/edgeclass';
 import { buildScene } from '../scene/build';
+import type { PlannerBundle, PlanningMode } from '../scene/planner-bridge';
 import type { Scene } from '../scene/types';
 import { USE_COLOR, css, treeGreenCss } from '../scene/palette';
 import { layerOfPath, layerOfProp, layerOfSolid, layerOfSurface, type LayerId } from '../scene/layers';
@@ -193,8 +194,8 @@ export class View2D {
   /** 与 3D 共用的场景快照；模型 revision 变了才重建 */
   private scene: Scene | null = null;
   private sceneRev = -1;
-  /** 场景开关：标线 / 街道设施 */
-  private sceneOpts: { markings?: boolean; furniture?: boolean } = {};
+  /** 场景开关：标线 / 街道设施 / 规划模式（R8） */
+  private sceneOpts: { markings?: boolean; furniture?: boolean; planningMode?: PlanningMode } = {};
 
   constructor(canvas: HTMLCanvasElement, model: Model, cb: View2DCallbacks) {
     this.canvas = canvas;
@@ -260,8 +261,36 @@ export class View2D {
     this.scene = null;
   }
 
-  /** 切换标线 / 街道设施等图层后调用 */
-  setSceneOptions(opts: { markings?: boolean; furniture?: boolean }): void {
+  /**
+   * 最近一次绘制时用到的 Planner 报告（R8 Debug HUD）。
+   * draw() 是同步的，所以 draw() 之后立刻读得到。
+   */
+  get plannerBundle(): PlannerBundle | null {
+    return this.scene?.planner ?? null;
+  }
+
+  /**
+   * 场景快照（模型变了就重建）。
+   *
+   * 抽出来是为了让"读场景"和"画场景"走同一条路 ——
+   * 右栏的建筑数要显示 Planner 模式下的真实值，就必须能**先**拿到场景，
+   * 而不是等下一次绘制。
+   */
+  ensureScene(): Scene {
+    if (!this.scene || this.sceneRev !== this.model.revision) {
+      this.scene = buildScene(this.model, this.sceneOpts);
+      this.sceneRev = this.model.revision;
+    }
+    return this.scene;
+  }
+
+  /** 场景里的实际建筑数（Planner 模式下和 legacy 不一样，右栏要显示这个而不是 model 的） */
+  get sceneBuildingCount(): number {
+    return this.ensureScene().solids.length;
+  }
+
+  /** 切换标线 / 街道设施 / 规划模式后调用 */
+  setSceneOptions(opts: { markings?: boolean; furniture?: boolean; planningMode?: PlanningMode }): void {
     this.sceneOpts = { ...this.sceneOpts, ...opts };
     this.scene = null;
     this.requestDraw();
@@ -1158,11 +1187,7 @@ export class View2D {
     }
 
     // ---- 场景图层：与 3D 共用同一份数据，按高度从低到高铺
-    if (!this.scene || this.sceneRev !== this.model.revision) {
-      this.scene = buildScene(this.model, this.sceneOpts);
-      this.sceneRev = this.model.revision;
-    }
-    const scene = this.scene;
+    const scene = this.ensureScene();
 
     const surfaces = scene.surfaces.slice().sort((a, b) => a.y - b.y);
     for (const s of surfaces) {
@@ -1309,6 +1334,31 @@ export class View2D {
         ctx.fill();
         ctx.stroke();
       }
+    }
+
+    // ---- shadow 模式：Planner 的方案叠在 legacy 之上（红色虚线轮廓）
+    //
+    // 这一层是 R8 的"一眼看出两套方案不同"的载体：不填色、只画轮廓，
+    // 所以 legacy 的实体形态仍然可读，Planner 的体块则像投影一样浮在上面。
+    if (scene.overlay) {
+      ctx.save();
+      ctx.setLineDash([5 * px, 3.5 * px]);
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(224,86,58,0.92)';
+      ctx.lineWidth = 1.7 * px;
+      for (const s of scene.overlay.solids) {
+        this.tracePath(s.ring);
+        ctx.stroke();
+      }
+      ctx.setLineDash([3 * px, 3 * px]);
+      ctx.strokeStyle = 'rgba(224,86,58,0.45)';
+      ctx.lineWidth = 1.1 * px;
+      for (const s of scene.overlay.surfaces) {
+        if (!this.vis(layerOfSurface(s))) continue;
+        this.tracePath(s.ring);
+        ctx.stroke();
+      }
+      ctx.restore();
     }
 
     // ---- 道路结构覆盖：红线 / 中线 / 路口点

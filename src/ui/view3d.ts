@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Model } from '../town/model';
 import { buildTownMeshes, type Primitive } from '../export/build3d';
+import type { PlanningMode } from '../scene/planner-bridge';
 
 export class View3D {
   private container: HTMLElement;
@@ -90,6 +91,8 @@ export class View3D {
       markings?: boolean;
       furniture?: boolean;
       layers?: (id: string) => boolean;
+      /** 规划模式（R8）：planner / shadow 走 Planner 链路 */
+      planningMode?: PlanningMode;
     } = {}
   ): void {
     this.clear();
@@ -99,6 +102,7 @@ export class View3D {
       markings: opts.markings ?? true,
       furniture: opts.furniture ?? true,
       layers: opts.layers,
+      planningMode: opts.planningMode ?? 'legacy',
     });
     const matCache = new Map<string, THREE.MeshStandardMaterial>();
 

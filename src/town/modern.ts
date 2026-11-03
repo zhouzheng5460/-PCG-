@@ -268,7 +268,8 @@ function addSurface(
   mat: MatKey,
   y: number,
   clip = true,
-  allowThin = false
+  allowThin = false,
+  holes: Pt[][] = []
 ): SurfaceFeature | undefined {
   let r = ring;
   if (clip) {
@@ -298,7 +299,16 @@ function addSurface(
   if (name.startsWith('parking_') && Math.abs(area(r)) < 0.28) return;
   // 返回写出的那个要素：调用方偶尔需要**事后改它**（例如停车格排不下车位时
   // 把沥青改回硬地 —— 见 fillParkCells）。返回 undefined 表示没铺出去。
-  const feat: SurfaceFeature = { name, group: groupOf(c.use), ring: toCCW(r), mat, y };
+  // 洞统一成 CCW，和 2D 的填充方向保持一套
+  const cleanHoles = holes.filter((h) => h.length >= 3).map((h) => toCCW(h));
+  const feat: SurfaceFeature = {
+    name,
+    group: groupOf(c.use),
+    ring: toCCW(r),
+    mat,
+    y,
+    ...(cleanHoles.length > 0 ? { holes: cleanHoles } : {}),
+  };
   c.res.surfaces.push(feat);
   return feat;
 }

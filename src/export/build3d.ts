@@ -58,7 +58,7 @@ export function buildTownMeshes(model: Model, opts: Build3DOptions = {}): Primit
   for (const s of scene.surfaces) {
     if (!vis(layerOfSurface(s))) continue;
     if (!saneRing(s.ring)) continue;
-    addFlat(flatPolygon(s.ring, s.y, s.name, s.group, MAT[s.mat]));
+    addFlat(flatPolygon(s.ring, s.y, s.name, s.group, MAT[s.mat], s.holes ?? []));
   }
 
   // 建筑与围墙体块
