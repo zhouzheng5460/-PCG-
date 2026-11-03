@@ -37,6 +37,7 @@ import type {
 import { industrialDiagnostics } from '../../typologies/industrial';
 import { evaluateLayout } from '../../core/evaluator';
 import { INDUSTRIAL_WEIGHTS } from '../../typologies/industrial';
+import { claimResidual } from '../shared/claim';
 
 /** 米 → 世界单位（1 单位 ≈ 7 m） */
 const U = (m: number) => m / 7;
@@ -222,13 +223,12 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   add('service_lane', cut(u0, u1 - W * 0.22, v1 - lane, v1));
   add('utility_yard', cut(u1 - W * 0.22, u1, v1 - lane, v1), '设备/变电');
 
-  // 残地：可建区减掉已铺 + 仓库
-  const used: PlanSurface[] = [...ground.map((g) => g.surface), wh];
-  const rest = surfaceSubtract([ctx.buildableArea], used);
-  if (rest.length > 0) {
-    const biggest = rest.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
-    if (surfaceArea(biggest) > surfaceArea(ctx.buildableArea) * 0.01) add('residual', biggest);
-  }
+  // 残地：可建区减掉已铺 + 仓库。
+  //
+  // 原来只认领**最大一块**，其余直接丢掉。丢掉的是新月形地块两侧的两条月牙
+  // （合计 20.4% 的可建区）—— 它们在 Scene 里没有任何 program，
+  // 2D 上就是一片纸面底色，读起来像"这块地没规划完"。
+  claimResidual(ctx, 'industrial', [...ground.map((g) => g.surface), wh], add);
 
   // ---- 仓库的朝向：**按真实几何算**，不要简单用 ±v。
   // 不规则地块上（或 side-biased 变体里仓库偏在一侧），"从仓库中心指向

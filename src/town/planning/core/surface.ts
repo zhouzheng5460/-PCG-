@@ -90,10 +90,28 @@ export function ringArea(ring: Pt[]): number {
   return s / 2;
 }
 
+/**
+ * 送进布尔运算的坐标要**量化**。
+ *
+ * polygon-clipping 用的 martinez 算法对"几乎重合但不完全重合"的顶点很脆，
+ * 典型报错是 `Unable to complete output ring starting at [...]`。
+ * 实战里它让 4 块地的 `union(已用地)` 直接失败 —— 而失败会静默退回原列表，
+ * 后续 `subtract(可建区, 已用地)` 就切不动，整块可建区被标成绿地。
+ *
+ * 1 世界单位 ≈ 7 m，所以 1e-6 单位 ≈ 7 微米：低于任何有意义的几何尺度，
+ * 但足以把"1e-15 级别的差异"消掉。
+ */
+const SNAP_GRID = 1e-6;
+
+function snap(v: number): number {
+  const r = Math.round(v / SNAP_GRID) * SNAP_GRID;
+  return Object.is(r, -0) ? 0 : r;
+}
+
 function toNest(ss: PlanSurface[]): Nest {
   return ss.map((s) => [
-    s.outer.map((p) => [p.x, p.y] as number[]),
-    ...s.holes.map((h) => h.map((p) => [p.x, p.y] as number[])),
+    s.outer.map((p) => [snap(p.x), snap(p.y)] as number[]),
+    ...s.holes.map((h) => h.map((p) => [snap(p.x), snap(p.y)] as number[])),
   ]) as unknown as Nest;
 }
 
@@ -113,30 +131,109 @@ function fromNest(n: Nest): PlanSurface[] {
   return out;
 }
 
+/**
+ * 布尔运算**静默失败**的计数器（诊断用，不参与任何几何决策）。
+ *
+ * 三个函数都有 `catch { return 原值 }` 的兜底 —— 兜底本身是必要的
+ * （宁可退化成"这一刀没切"也不崩），但**必须可观测**：
+ * 一次静默失败会让 `subtract(可建区, 已用地)` 返回**整块地**，
+ * 后续把它标成 landscape 就覆盖了整个地块 —— 零售地块上真的发生过，
+ * 一张 4928 m² 的"绿地"直接盖住了 4928 m² 的可建区，
+ * 2D 上看不出任何异常（因为它就是地块底色）。
+ *
+ * 集成测试可以 `resetGeometryFailures()` 后跑一遍全城，
+ * 断言三个计数全为 0 —— 这才是"几何真的算对了"的证据。
+ */
+export const geometryFailures = {
+  union: 0,
+  subtract: 0,
+  intersect: 0,
+  lastMessage: '',
+};
+
+export function resetGeometryFailures(): void {
+  geometryFailures.union = 0;
+  geometryFailures.subtract = 0;
+  geometryFailures.intersect = 0;
+  geometryFailures.lastMessage = '';
+}
+
+function noteFailure(op: 'union' | 'subtract' | 'intersect', e: unknown): void {
+  geometryFailures[op]++;
+  const msg = e instanceof Error ? e.message : String(e);
+  if (msg && msg !== geometryFailures.lastMessage) geometryFailures.lastMessage = `${op}: ${msg}`;
+}
+
+/** 不记失败的并集（subtract 内部用，避免重复计数） */
+function unionQuiet(list: PlanSurface[]): PlanSurface[] {
+  if (list.length <= 1) return list;
+  try {
+    const n = toNest(list);
+    return fromNest(polygonClipping.union(n[0] as never, ...(n.slice(1) as never[])) as unknown as Nest);
+  } catch {
+    return list;
+  }
+}
+
 /** 并集（保留洞） */
 export function surfaceUnion(ss: PlanSurface[]): PlanSurface[] {
   const list = ss.filter((s) => s.outer.length >= 3);
   if (list.length === 0) return [];
   if (list.length === 1) return list;
   try {
-    return fromNest(polygonClipping.union(toNest(list)[0] as never, ...(toNest(list).slice(1) as never[])) as unknown as Nest);
-  } catch {
+    const n = toNest(list);
+    return fromNest(polygonClipping.union(n[0] as never, ...(n.slice(1) as never[])) as unknown as Nest);
+  } catch (e) {
+    noteFailure('union', e);
     return list;
   }
 }
 
-/** a 减去 b（保留 a 上被 b 掏出来的洞） */
+/** 一次 difference（批量）。减数先并一次 —— 减数之间允许重叠。 */
+function subtractOnce(as: PlanSurface[], bs: PlanSurface[]): PlanSurface[] {
+  const A = toNest(as);
+  const B = toNest(bs.length > 1 ? unionQuiet(bs) : bs);
+  return fromNest(polygonClipping.difference(A as never, B as never) as unknown as Nest);
+}
+
+/** 面积和（内部用，避免依赖调用方的口径） */
+function totalArea(ss: PlanSurface[]): number {
+  return ss.reduce((s, p) => s + Math.abs(ringArea(p.outer)), 0);
+}
+
+/**
+ * a 减去 b（保留 a 上被 b 掏出来的洞）。
+ *
+ * 批量 difference 在**减数与可建区边界相切**时会抛错（polygon-clipping 的
+ * 数值退化），而抛错若直接 `return as`，调用方拿到的就是**整块 a** ——
+ * 零售地块上因此出现过一张覆盖整个地块的假"绿地"。
+ *
+ * 所以失败时**降级为逐块减**：每次只面对一个减数，稳定性高得多。
+ * 降级也可能有某几刀切不动，那种情况**跳过这一刀**继续 ——
+ * 宁可少减（残地偏少），也绝不能返回整块（残地 = 整块，视觉上是假的满铺）。
+ * 只有在"一块都没减掉"时才记一次真失败。
+ */
 export function surfaceSubtract(a: PlanSurface[], b: PlanSurface[]): PlanSurface[] {
   const as = a.filter((s) => s.outer.length >= 3);
   const bs = b.filter((s) => s.outer.length >= 3);
   if (as.length === 0) return [];
   if (bs.length === 0) return as;
   try {
-    const A = toNest(as);
-    const B = toNest(bs);
-    return fromNest(polygonClipping.difference(A as never, B as never) as unknown as Nest);
-  } catch {
-    return as;
+    return subtractOnce(as, bs);
+  } catch (e) {
+    const before = totalArea(as);
+    let cur = as;
+    for (const one of bs) {
+      try {
+        const next = subtractOnce(cur, [one]);
+        if (totalArea(next) < totalArea(cur) - 1e-12) cur = next;
+      } catch {
+        // 这一刀切不动，跳过（不影响其它刀）
+      }
+      if (cur.length === 0) break;
+    }
+    if (totalArea(cur) >= before - 1e-9) noteFailure('subtract', e);
+    return cur;
   }
 }
 
@@ -147,7 +244,8 @@ export function surfaceIntersect(a: PlanSurface[], b: PlanSurface[]): PlanSurfac
   if (as.length === 0 || bs.length === 0) return [];
   try {
     return fromNest(polygonClipping.intersection(toNest(as) as never, toNest(bs) as never) as unknown as Nest);
-  } catch {
+  } catch (e) {
+    noteFailure('intersect', e);
     return [];
   }
 }

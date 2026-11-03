@@ -44,6 +44,7 @@ import {
 } from '../../typologies/multifamily';
 import { evaluateLayout, weightsFor } from '../../core/evaluator';
 import { buildPrincipalCourtCandidate, shouldUsePrincipalAxis } from './principal-court';
+import { claimResidual } from '../shared/claim';
 
 const U = (m: number) => m / 7;
 
@@ -305,13 +306,8 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   // ---- ⑦ 服务：后侧一条窄带，避开停车
   add('service', cut(u0 + W * 0.66, u1 - W * 0.04, v1 - Math.min(U(6), rearD * 0.5), v1), '垃圾/后勤');
 
-  // ---- ⑧ 残地
-  const used: PlanSurface[] = [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)];
-  const rest = surfaceSubtract([ctx.buildableArea], used);
-  if (rest.length > 0) {
-    const biggest = rest.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
-    if (surfaceArea(biggest) > surfaceArea(ctx.buildableArea) * 0.01) add('residual', biggest);
-  }
+  // ---- ⑧ 残地：全部认领
+  claimResidual(ctx, 'multi_family', [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)], add);
 
   // ---- ⑨ 出入口：人行先于车行（street → entrance → courtyard）
   const edgePoint = (t: number): Pt => {

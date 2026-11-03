@@ -19,6 +19,7 @@ import type { SiteContext } from '../../core/types';
 import type { PlannedAccess, PlannedBuilding, PlannedRegion, ParkingRequest, SitePlanCandidate } from '../../core/candidate';
 import { retailDiagnostics, SHOP_DEPTH_M } from '../../typologies/retail';
 import { evaluateLayout, weightsFor } from '../../core/evaluator';
+import { claimResidual } from '../shared/claim';
 
 const U = (m: number) => m / 7;
 
@@ -204,13 +205,8 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   add('landscape', cut(u0, u0 + W * 0.06, v0, Math.min(v1, v0 + shopD * 0.4)));
   add('landscape', cut(u1 - W * 0.06, u1, v0, Math.min(v1, v0 + shopD * 0.4)));
 
-  // 残地
-  const used: PlanSurface[] = [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)];
-  const rest = surfaceSubtract([ctx.buildableArea], used);
-  if (rest.length > 0) {
-    const big = rest.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
-    if (surfaceArea(big) > surfaceArea(ctx.buildableArea) * 0.01) add('residual', big);
-  }
+  // 残地：全部认领（原来只认最大一块，剩下的在 2D 上是纸面底色）
+  claimResidual(ctx, 'retail', [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)], add);
 
   // ---- 出入口：顾客从主街，货车走后侧/侧街
   const edgePoint = (t: number): Pt => {

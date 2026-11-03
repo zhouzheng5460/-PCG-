@@ -17,7 +17,16 @@ import { buildPlannerBundle, PLANNER_ENABLED_TYPOLOGIES } from '../src/scene/pla
 import { ModernWard } from '../src/town/modern';
 import { patchKey } from '../src/town/patch';
 import { ringArea } from '../src/scene/types';
-import { pointInRing } from '../src/town/planning/core/surface';
+import {
+  pointInRing,
+  surfaceArea,
+  surfaceSubtract,
+  surfaceUnion,
+  geometryFailures,
+  resetGeometryFailures,
+} from '../src/town/planning/core/surface';
+import { siteContextFromModel } from '../src/town/planning/adapters/model';
+import { generateCandidates } from '../src/town/planning/generators';
 import { Pt } from '../src/core/geom';
 import type { SiteTypology } from '../src/town/planning/core/types';
 
@@ -185,7 +194,7 @@ ok('Planner 确实接管了地块', bundle.stats.covered > 0, `${bundle.stats.co
     // 院子材质
     const court = feats.surfaces.find((s) => s.name.includes('courtyard'));
     if (court) {
-      ok(`院子用草坪而不是浅灰铺装（${key}）`, court.mat === 'grassLight', court.mat);
+      ok(`院子用低饱和草坪而不是浅灰铺装（${key}）`, court.mat === 'lawn', court.mat);
     }
   }
 
@@ -224,6 +233,61 @@ ok('Planner 确实接管了地块', bundle.stats.covered > 0, `${bundle.stats.co
     (r) => (r.typology === 'hotel' || r.typology === 'data_center' || r.typology === 'single_family') && r.covered
   );
   ok('未接入的类型没有被接管', hotelCovered.length === 0, `${hotelCovered.length}`);
+}
+
+// ---------------------------------------------------------------- ⑧ 几何可靠性与地面归属
+//
+// 这一节守的是 R8 后期挖出的一个 P0 级问题：
+//
+//   polygon-clipping 在"减数与边界相切 / 顶点几乎重合"时会抛
+//   `Unable to complete output ring`，而 surface* 系列都有
+//   `catch { return 原值 }` 的兜底 —— 于是 `subtract(可建区, 已用地)`
+//   返回**整块可建区**，调用方把它标成 landscape，一张 4200 m² 的假"绿地"
+//   就盖住了整块地。2D 上完全看不出来（它就是地块底色），
+//   只有"可建区里有多少面积没有任何 program"这个度量能发现。
+//
+// 修法两层：① 送进布尔运算的坐标量化到 1e-6 世界单位（≈7 μm）；
+//          ② 批量 difference 失败时降级为逐块减，宁可少切也绝不返回整块。
+{
+  resetGeometryFailures();
+
+  // 只为触发一遍完整的生成 + 实现（bundle 里的候选都是现算的）
+  let unclaimed = 0;
+  let buildable = 0;
+  let worstKey = '';
+  let worstShare = 0;
+
+  for (const patch of m.patches) {
+    if (patch.blocked) continue;
+    const ctx = siteContextFromModel(m, patch, { net });
+    const cands = generateCandidates(ctx);
+    if (cands.length === 0) continue;
+    const c = cands[0];
+    const used = surfaceUnion([...c.ground.map((g) => g.surface), ...c.buildings.map((b) => b.footprint)]);
+    const rest = surfaceSubtract([ctx.buildableArea], used);
+    const un = rest.reduce((s2, q) => s2 + surfaceArea(q), 0);
+    const tot = surfaceArea(ctx.buildableArea);
+    unclaimed += un;
+    buildable += tot;
+    if (un / Math.max(1e-6, tot) > worstShare) {
+      worstShare = un / Math.max(1e-6, tot);
+      worstKey = patchKey(patch);
+    }
+  }
+
+  const share = unclaimed / Math.max(1e-6, buildable);
+  console.log(
+    `  几何：可建区 ${(buildable * 49).toFixed(0)} m²，无主 ${(unclaimed * 49).toFixed(0)} m² = ${(share * 100).toFixed(2)}%` +
+      `（最差 ${worstKey} ${(worstShare * 100).toFixed(1)}%）`
+  );
+  console.log(
+    `  布尔运算静默失败：union ${geometryFailures.union} / subtract ${geometryFailures.subtract} / intersect ${geometryFailures.intersect}`
+  );
+
+  ok('布尔运算零静默失败', geometryFailures.union + geometryFailures.subtract + geometryFailures.intersect === 0,
+    `union ${geometryFailures.union} / subtract ${geometryFailures.subtract} / intersect ${geometryFailures.intersect}（${geometryFailures.lastMessage}）`);
+  ok('可建区里几乎没有无主地（<1%）', share < 0.01, `${(share * 100).toFixed(2)}%`);
+  ok('没有单块地整片无主', worstShare < 0.2, `${worstKey} ${(worstShare * 100).toFixed(1)}%`);
 }
 
 console.log(fail === 0 ? `\n# PASS — ${n} 项断言，0 项失败` : `\n# FAIL — ${n} 项断言，${fail} 项失败`);

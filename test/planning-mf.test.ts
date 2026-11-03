@@ -326,13 +326,21 @@ const ctxOf = (parcel: Pt[], edges: SiteRoadEdge[], holes: Pt[][] = []) =>
     const problems: string[] = [];
     if (!principal) problems.push('没有 principal 候选');
     if (!winner || winner.id !== 'mf-court-principal') problems.push(`winner 仍是 ${winner?.id}`);
+    // 越界判定用**相对容差**，不用绝对面积容差。
+    // 布尔运算的输入会量化到 1e-6 世界单位（≈7 μm）来躲开 martinez 的数值退化，
+    // 于是输出的面积会带 1e-4 m² 级的浮点噪声 —— 原先写死的 `- 1e-6`（世界单位²
+    // ≈ 5e-5 m²）比噪声还小，会把"越界 0.1 平方厘米"判成失败。
+    // 0.1% 相对容差对最小 300 m² 的 bar 是 0.3 m²，远大过噪声、远小过真越界。
+    const OUT_TOL = 1e-3;
     for (const b of winner.buildings) {
-      const inter = surfaceIntersect([b.footprint], [ctx.buildableArea]).reduce((a, q) => a + surfaceArea(q), 0);
-      if (inter < surfaceArea(b.footprint) - 1e-6) problems.push('建筑越出可建区');
+      const a = surfaceArea(b.footprint);
+      const inter = surfaceIntersect([b.footprint], [ctx.buildableArea]).reduce((x, q) => x + surfaceArea(q), 0);
+      if (inter < a * (1 - OUT_TOL)) problems.push(`建筑越出可建区 ${(((a - inter) / a) * 100).toFixed(2)}%`);
     }
     for (const g of winner.ground) {
-      const inter = surfaceIntersect([g.surface], [ctx.buildableArea]).reduce((a, q) => a + surfaceArea(q), 0);
-      if (inter < surfaceArea(g.surface) - 1e-6) problems.push(`地面 ${g.program} 越出可建区`);
+      const a = surfaceArea(g.surface);
+      const inter = surfaceIntersect([g.surface], [ctx.buildableArea]).reduce((x, q) => x + surfaceArea(q), 0);
+      if (inter < a * (1 - OUT_TOL)) problems.push(`地面 ${g.program} 越出可建区 ${(((a - inter) / a) * 100).toFixed(2)}%`);
     }
     for (const b of winner.buildings) {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;

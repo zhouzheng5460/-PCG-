@@ -28,6 +28,7 @@ import type { SiteContext } from '../../core/types';
 import type { PlannedAccess, PlannedBuilding, PlannedRegion, ParkingRequest, SitePlanCandidate } from '../../core/candidate';
 import { hotelDiagnostics, DROPOFF_MIN_DEPTH_M } from '../../typologies/hotel';
 import { evaluateLayout, weightsFor } from '../../core/evaluator';
+import { claimResidual } from '../shared/claim';
 
 const U = (m: number) => m / 7;
 
@@ -203,13 +204,8 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   const svc = cut(u0 + W * 0.55, u1, v1 - laneD, v1);
   add('service', svc, '后勤/BOH（布草、垃圾、供货）');
 
-  // ---- 残地
-  const used: PlanSurface[] = [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)];
-  const rest = surfaceSubtract([ctx.buildableArea], used);
-  if (rest.length > 0) {
-    const big = rest.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
-    if (surfaceArea(big) > surfaceArea(ctx.buildableArea) * 0.01) add('residual', big);
-  }
+  // ---- 残地：全部认领
+  claimResidual(ctx, 'hotel', [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)], add);
 
   // ---- 出入口：客人走主街（进入落客带），后勤走后侧/侧街
   const edgePoint = (t: number): Pt => {

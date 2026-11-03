@@ -88,18 +88,27 @@ export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
   service_lane: 'asphalt',
   employee_parking: 'asphaltLot',
   office_forecourt: 'paver',
-  landscape_buffer: 'grass',
+  // 工业缓冲带用**砂石**而不是草：真实的工业场地边缘就是碎石/杂草，
+  // 而且工业地块的缓冲带动辄 20% 面积，给草会把整片工业区染成公园。
+  landscape_buffer: 'gravel',
   utility_yard: 'gravel',
   // 住宅 / 零售 / 酒店共用
-  // 院子用**修剪草坪**而不是浅灰铺装：stonePave(0.757) 和屋面 roofLight(0.615)
+  //
+  // 院子用草坪而不是浅灰铺装：stonePave(0.757) 和屋面 roofLight(0.615)
   // 在俯视图里几乎同色，一大片院子读起来像"这块地空着"。
-  // 换成 grassLight 之后，院子 / 绿化(grass) / 铺装(paver) 三层一眼分得开。
-  courtyard: 'grassLight',
+  //
+  // 但**不能用 grassLight**：住宅围合方案的院子占地块 67%，
+  // 全城铺亮绿之后读起来是"公园里散着几栋楼"，不是城市。
+  // 院子用**低饱和浅绿(lawn)**，不用 grass / grassLight：
+  // 院子占围合式住宅地块 67%，饱和草绿铺满后整座城像"公园里散着几栋楼"。
+  // 边缘绿化继续用 grassDark（深、饱和），于是 院子(浅灰绿) / 绿地(深绿) /
+  // 铺装(paver 0.66~0.76) 三层能分开，且灰调为主。
+  courtyard: 'lawn',
   amenity: 'paver',
   entrance_forecourt: 'stonePave',
   pedestrian: 'paver',
   parking: 'asphaltLot',
-  landscape: 'grass',
+  landscape: 'grassDark',
   service: 'asphalt',
   // 酒店
   arrival_court: 'stonePave',
@@ -164,28 +173,35 @@ export const TYPOLOGY_APPEARANCE: Record<
   { walls: { wall: MatKey; roof: MatKey }[]; note: string }
 > = {
   multi_family: {
-    // 多层住宅：暖色涂料 + 平屋顶，女儿墙在 2D 里靠墙面色带读出来
+    // 多层住宅：砖红外墙 + **中深灰平屋顶**。
+    //
+    // 2D 用 roofMat 填充、wallMat 描边，所以"屋顶用浅色"等于"楼是白的" ——
+    // 浅灰 roofLight(0.62) 铺在 lawn(0.72) 的院子上，只暗 0.1，
+    // 整片读成"更白的一块地面"，就是用户说的"素白大盒子"。
+    // 压到 roofFlat(0.40) / roofDark(0.30) 之后 figure-ground 才立起来：
+    // 浅绿院子上的深灰条 = 楼，这是总图的读法。
     walls: [
-      { wall: 'wallBrick', roof: 'roofLight' },
-      { wall: 'wallConcrete', roof: 'roofFlat' },
-      { wall: 'wallBrick', roof: 'roofLight' },
+      { wall: 'wallBrick', roof: 'roofDark' },
+      { wall: 'wallConcrete', roof: 'roofDark' },
+      { wall: 'wallBrick', roof: 'roofFlat' },
     ],
-    note: '多层住宅：砖红 / 涂料交替',
+    note: '多层住宅：砖红外墙 + 深灰平屋顶',
   },
   single_family: {
     walls: [
-      { wall: 'wallBrick', roof: 'roofLight' },
-      { wall: 'wallStone', roof: 'roofLight' },
+      { wall: 'wallBrick', roof: 'roofDark' },
+      { wall: 'wallStone', roof: 'roofFlat' },
       { wall: 'wallConcrete', roof: 'roofFlat' },
     ],
-    note: '独栋：暖色为主',
+    note: '独栋：暖色外墙 + 深色坡屋面',
   },
   retail: {
-    // 商业：大面玻璃幕墙 + 女儿墙檐口
+    // 商业：玻璃幕墙 + 浅色檐口屋面（商业大盒在总图上本来就是浅的，
+    // 和住宅的深灰屋顶正好形成"住深商浅"的读法）
     walls: [
       { wall: 'wallGlass', roof: 'roofLight' },
-      { wall: 'wallPanel', roof: 'roofLight' },
-      { wall: 'wallStone', roof: 'roofFlat' },
+      { wall: 'wallPanel', roof: 'roofMetal' },
+      { wall: 'wallStone', roof: 'roofLight' },
     ],
     note: '零售：玻璃幕墙为主',
   },
@@ -203,7 +219,7 @@ export const TYPOLOGY_APPEARANCE: Record<
   industrial: {
     walls: [
       { wall: 'wallPanel', roof: 'roofMetal' },
-      { wall: 'wallConcrete', roof: 'roofMetal' },
+      { wall: 'wallConcrete', roof: 'roofFlat' },
     ],
     note: '工业：金属面板 / 混凝土',
   },
