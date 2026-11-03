@@ -47,16 +47,22 @@ const ctxOf = (parcel: Pt[], edges: SiteRoadEdge[], holes: Pt[][] = []) =>
 function checkRetail(ctx: SiteContext, c: SitePlanCandidate): string[] {
   const bad: string[] = [];
   const shop = c.buildings[0];
-  const parking = c.ground.find((g) => g.program === 'parking');
+  const parkParts = c.ground.filter((g) => g.program === 'parking');
+  const parking = parkParts[0];
+  const parkArea = parkParts.reduce((a, g) => a + g.area, 0);
   const car = c.access.find((a) => a.role === 'car');
   const svc = c.access.find((a) => a.role === 'service');
 
   const noParking = c.notes.some((t) => t.includes('NO_PARKING'));
+  // 停车紧张是**显式标注**的地块条件，不是不合格：
+  // 店铺 + 8 m 店前带在小地块上吃掉大半，停车到不了 12% 是真实的。
+  // 但"没标又不够"仍然算不合格 —— 不允许静默变差。
+  const parkTight = c.notes.some((t) => t.includes('PARKING_TIGHT'));
   if (!shop) bad.push('没有店铺');
   if (!parking && !noParking) bad.push('没有顾客停车');
   if (!c.access.some((a) => a.role === 'pedestrian')) bad.push('没有顾客入口');
-  if (parkingOverlapsShop(c) > (parking?.area ?? 1) * 0.05) bad.push('停车压店铺');
-  if (!noParking && (!parking || parking.area / Math.max(1e-6, surfaceArea(ctx.parcel)) < 0.12)) bad.push('停车区过小');
+  if (parkingOverlapsShop(c) > (parkArea || 1) * 0.05) bad.push('停车压店铺');
+  if (!noParking && !parkTight && parkArea / Math.max(1e-6, surfaceArea(ctx.parcel)) < 0.12) bad.push('停车区过小');
 
   // 顾客口与服务口不能在同一条边（卸货穿过顾客区）
   if (car && svc && car.frontage === svc.frontage) {

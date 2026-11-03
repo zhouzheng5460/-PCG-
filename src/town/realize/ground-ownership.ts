@@ -154,13 +154,18 @@ export function exclusiveOverlapRatio(regions: PlannedRegion[]): number {
   const boxes = regions.map((r) => bbox(r.surface.outer));
   let overlap = 0;
   let total = 0;
-  for (const r of regions) total += r.area;
+  // 口径必须**处处一致**：`r.area` 是调用方给的，未必减过洞；
+  // 而 surfaceArea() 是"外环 − 洞"。两者混用会把"带洞的面"当成重叠 ——
+  // MF 院子加步道之后 parking 出现洞，这个函数立刻误报 6.47%。
+  for (const r of regions) total += surfaceArea(r.surface);
 
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
       if (!boxesOverlap(boxes[i], boxes[j])) continue;
       const inter = surfaceSubtract([regions[i].surface], [regions[j].surface]);
-      const interArea = regions[i].area - inter.reduce((s, p) => s + surfaceArea(p), 0);
+      const before = surfaceArea(regions[i].surface);
+      const after = inter.reduce((s, p) => s + surfaceArea(p), 0);
+      const interArea = before - after;
       if (interArea > 1e-6) overlap += interArea;
     }
   }

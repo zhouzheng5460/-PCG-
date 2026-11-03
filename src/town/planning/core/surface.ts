@@ -164,28 +164,67 @@ function noteFailure(op: 'union' | 'subtract' | 'intersect', e: unknown): void {
   if (msg && msg !== geometryFailures.lastMessage) geometryFailures.lastMessage = `${op}: ${msg}`;
 }
 
-/** 不记失败的并集（subtract 内部用，避免重复计数） */
+/** 一次并（全部一起传）。polygon-clipping 通常这样质量最好。 */
+function unionOnce(list: PlanSurface[]): PlanSurface[] {
+  const n = toNest(list);
+  return fromNest(polygonClipping.union(n[0] as never, ...(n.slice(1) as never[])) as unknown as Nest);
+}
+
+/** 不记失败的并集（内部用，避免重复计数） */
 function unionQuiet(list: PlanSurface[]): PlanSurface[] {
   if (list.length <= 1) return list;
   try {
-    const n = toNest(list);
-    return fromNest(polygonClipping.union(n[0] as never, ...(n.slice(1) as never[])) as unknown as Nest);
+    return unionOnce(list);
   } catch {
     return list;
   }
 }
 
-/** 并集（保留洞） */
+/**
+ * 并集降级：逐个尝试并入已有的块，**只合并真正相交的**。
+ *
+ * 为什么需要它：polygon-clipping 的 martinez 实现是递归的，一次传十几个面
+ *（MF 院子被步道切成 4 块 + 3 条步道 + 场地 + 前场 + 停车 + 绿化之后就常见）
+ * 会直接 `Maximum call stack size exceeded`。
+ *
+ * 为什么不是"两两归并"：院子里的四块草坪**本来就不相连**，两两并的结果
+ * 仍然是两块，按"块数有没有减少"判断收敛会立刻误判为失败。
+ * 这里改成"挨个试并入"：并得进去就吸收、并不进去就独立成块，
+ * 无论输入是否相连都能走完，结果和一次性并等价（只是慢）。
+ */
+function unionFold(list: PlanSurface[]): PlanSurface[] {
+  const out: PlanSurface[] = [];
+  for (const s of list) {
+    let absorbed = false;
+    for (let i = 0; i < out.length; i++) {
+      const m = unionQuiet([out[i], s]);
+      if (m.length === 1) {
+        out[i] = m[0];
+        absorbed = true;
+        break;
+      }
+    }
+    if (!absorbed) out.push(s);
+  }
+  return out;
+}
+
 export function surfaceUnion(ss: PlanSurface[]): PlanSurface[] {
   const list = ss.filter((s) => s.outer.length >= 3);
   if (list.length === 0) return [];
   if (list.length === 1) return list;
+  // 先按最自然的方式一次并完（结果质量最好）；
+  // 只有在它抛错（典型是 martinez 递归太深 → `Maximum call stack size exceeded`）
+  // 时才降级为两两归并 —— 两两归并的合并成功率略低，但不会爆栈。
   try {
-    const n = toNest(list);
-    return fromNest(polygonClipping.union(n[0] as never, ...(n.slice(1) as never[])) as unknown as Nest);
-  } catch (e) {
-    noteFailure('union', e);
-    return list;
+    return unionOnce(list);
+  } catch (first) {
+    try {
+      return unionFold(list);
+    } catch {
+      noteFailure('union', first);
+      return list;
+    }
   }
 }
 

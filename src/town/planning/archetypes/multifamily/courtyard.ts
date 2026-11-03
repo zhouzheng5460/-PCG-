@@ -222,7 +222,9 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     if (!s) return;
     ground.push({ program, surface: s, area: surfaceArea(s), ...(note ? { notes: [note] } : {}) });
   };
-  add('courtyard', court);
+  // 院子的 add 推迟到 ⑤：室外的步行骨架要从它身上切出步道，
+  // 先 add 会在 ground 里留下"整块草坪 + 压在上面的步道"两套互相重叠的面。
+  const entryU = cu0 + courtW * 0.5;
 
   // ---- ③ 建筑围着院子长（四条 bar，各自独立，不做带洞多边形）
   const buildings: PlannedBuilding[] = [];
@@ -242,7 +244,18 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     buildings.push({ role: 'house', footprint: s, height: barHeight, notes: [note] });
   };
 
-  if (variant.front) pushBar(cut(u0, u1, v0, v0 + frontD), '临街 bar（主街界面）');
+  // 入口门洞是否开（面宽够才开；不够就整条 bar 保留，主步道只能从院子起）
+  let gateOpen = false;
+  if (variant.front) {
+    // 临街 bar 中间必须**开一个门洞**，否则院子根本进不去：
+    // bar 占满整个面宽，院子被它和街道完全隔开，人在平面上无路可走。
+    // 门洞宽 5 m，两侧各留一段 bar（每段都得过纸片楼检查）。
+    const bar = cut(u0, u1, v0, v0 + frontD);
+    const gate = W * 7 >= 24 ? cut(entryU - U(2.5), entryU + U(2.5), v0 - U(1), v0 + frontD + U(1)) : null;
+    const parts = bar && gate ? surfaceSubtract([bar], [gate]) : bar ? [bar] : [];
+    for (const part of parts) pushBar(part, gate ? '临街 bar（中留 5 m 入口门洞）' : '临街 bar（主街界面）');
+    gateOpen = !!gate;
+  }
   // 后侧 bar **不占满面宽**：留出一段给停车。早先 rear bar 占满，停车只能往院子边上挤，
   // 结果"停车压院子"在 M01/M02/M07 全线报错 —— 住宅的停车必须退到侧后方，
   // 而后侧 bar 本身就是"后侧"，所以从它身上让一段最合理。
@@ -262,20 +275,87 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     return null;
   }
 
-  // ---- ④ 前场：入口广场（front-open 时它和院子连成一片）
+  // ---- ④ 前场：入口广场（只算面，不 add —— 它要么落在门洞里、要么落在院子里，
+  //      两种情况都必须从院子/草坪里挖出去，不能叠着放）
   const foreDepth = Math.max(U(6), bd * 0.55);
-  if (variant.front) {
-    // 有临街 bar：前广场压在 bar 前面，居中留出主入口
-    add('entrance_forecourt', cut(u0 + W * 0.34, u0 + W * 0.66, v0 - 0, v0 + Math.min(foreDepth, frontD * 0.6)));
-  } else {
-    // 朝街打开：入口广场就是院子朝街的那一段
-    add('entrance_forecourt', cut(cu0 + courtW * 0.25, cu1 - courtW * 0.25, v0, v0 + Math.min(foreDepth, courtD * 0.4)));
-    // 人行轴：从街直接穿到院子
-    add('pedestrian', cut(u0 + W * 0.46, u0 + W * 0.54, v0, cv0 + courtD * 0.5), '入口轴（街 → 院子）');
+  const foreS = variant.front
+    ? // 有临街 bar：前广场就是**门洞那一格**，深到 bar 背面（cv0 = v0 + frontD）。
+      // 早先只做 0.6×frontD，门洞里剩下一段没 program 的空地；
+      // 而且中心用的是地块中心 u0+0.5W，和门洞用的院子中心 entryU 不是一条线。
+      (() => {
+        const foreHalf = Math.min(W * 0.16, W * 0.5 - (entryU - u0));
+        return cut(entryU - foreHalf, entryU + foreHalf, v0, cv0);
+      })()
+    : // 朝街打开：入口广场就是院子朝街的那一段（下面会和院子做差）
+      cut(cu0 + courtW * 0.25, cu1 - courtW * 0.25, v0, v0 + Math.min(foreDepth, courtD * 0.4));
+
+  // ---- ⑤ 院子内部：步行骨架
+  //
+  // 围合式住宅的院子**不是一块草坪** —— 人得能从街走到每栋楼门口。
+  // 之前院子是一整块 courtyard（占 MF 地块 67%），只在前朝街的变体里有一条
+  // 半截入口轴，2D 上读起来就是"一块绿毯 + 几棵树"，这是它显空的直接原因。
+  //
+  // 这里补最小可读结构：
+  //   · 主入口轴：从临街（或门洞）贯穿院子到后侧 bar，宽 5 m；
+  //   · 横向支路：院子够大时加，串起东西两翼，宽 4 m。
+  // 十字步道把院子切成四块绿地，这才是"围合的院子"。
+  // 步道宽度都 >= 4 m，不会被"碎片"度量算成窄缝（阈值 3 m）。
+  const WALK_MAIN_HALF = U(2.5);
+  const walks: PlanSurface[] = [];
+  // 主步道从**院子边**（cv0）起，一直贯通到后侧 bar。
+  // 不穿门洞：门洞里那一格是前场（entrance_forecourt），两段铺装首尾相接，
+  // 视觉上是一条路；但**数据上不能重叠** —— 早先让步道从 v0 起，
+  // 它和前场重合了 6.5% 的地面，G-R02（地面独占）直接红。
+  void gateOpen;
+  const walkMain = cut(entryU - WALK_MAIN_HALF, entryU + WALK_MAIN_HALF, cv0, cv1);
+  if (walkMain) walks.push(walkMain);
+
+  // 横向支路只在院子净宽 >= 26 m 且进深 >= 22 m 时加：
+  // 更小的院子横切之后，四块草坪里最窄的会掉到 3~4 m，既不像绿地也不像场地。
+  const crossOk = courtWM >= 26 && courtDM >= 22;
+  if (crossOk) {
+    const cvMid = cv0 + courtD * 0.5;
+    const cross = cut(cu0, cu1, cvMid - U(2), cvMid + U(2));
+    if (cross) {
+      // 十字交叉点必然重叠 —— 横路要**减掉主步道**，变成左右两段。
+      // 两块面占同一片地会在 G-R02（地面独占）里直接算成重叠。
+      const halves = walkMain ? surfaceSubtract([cross], [walkMain]) : [cross];
+      for (const h of halves) if (shortestSideM(h) >= 3) walks.push(h);
+    }
   }
 
-  // ---- ⑤ 配套（院子一角）与绿化（沿街两侧）
-  add('amenity', cut(cu1 - courtW * 0.32, cu1 - courtW * 0.04, cv0 + courtD * 0.1, cv0 + courtD * 0.45), '会客/活动场地');
+  // ---- ⑤b 配套：院子**东北象限**，让开十字步道
+  //
+  //   横向支路在 cv0 + courtD*0.5 上，宽 4 m（±2 m）。原来 amenity 的 v 范围是
+  //   0.10~0.45 —— 在 22 m 进深的院子里，上沿 9.9 m、支路下沿 9 m，
+  //   两者压在一起 0.9 m。现在整体移到支路以北（0.56~0.90），仍在东北角。
+  const amenityS = cut(
+    cu1 - courtW * 0.32,
+    cu1 - courtW * 0.04,
+    cv0 + courtD * 0.56,
+    cv0 + courtD * 0.9
+  );
+
+  // 前场减掉步道：front-open 时前场落在院子朝街那一段，主步道正从中间穿过 ——
+  // 不切的话两片铺装叠在一起（实测 1207 m² / 30 处）。切开后前场变成左右两翼，
+  // 中间是步道，这才是"广场 + 中轴"的真实布局。
+  const foreParts =
+    foreS && walks.length > 0 ? surfaceSubtract([foreS], walks) : foreS ? [foreS] : [];
+
+  // 草坪 = 院子 − 步道 − 场地 − 前场。**它们都要从草坪里挖出去**：
+  // 叠着放的话 ground 里有多块面占同一片地，PlanSurface 的"地表独占"约定就破了。
+  const carve = [...walks, ...[amenityS, ...foreParts].filter((x): x is PlanSurface => !!x)];
+  const courtParts = carve.length > 0 ? surfaceSubtract([court], carve) : [court];
+  for (const part of courtParts) add('courtyard', part, '围合院子');
+  for (const w of walks) add('pedestrian', w, walks.length > 1 ? '院内步道（主 + 横）' : '院内主步道');
+  add('amenity', amenityS, '会客/活动场地');
+  for (const p of foreParts) {
+    if (surfaceArea(p) < U(1) * U(1)) continue;
+    add('entrance_forecourt', p, variant.front ? '入口广场（门洞内）' : '入口广场（院子朝街一段）');
+  }
+  notes.push(
+    `院内步道 ${walks.length} 条（主 5 m${crossOk ? ' + 横 4 m' : ''}），草坪 ${courtParts.length} 块`
+  );
   // 沿街两端的绿化带：宽度给下限 4 m、上限 22% 面宽。
   // 早先固定 14% 面宽，在 20 m 宽的地块上就是 2.8 m 的细缝 —— 既难看，
   // 又会被"碎片"惩罚算成切碎，直接把 balanced 形态顶下去。

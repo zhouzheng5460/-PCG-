@@ -216,17 +216,11 @@ export function buildPrincipalCourtCandidate(ctx: SiteContext): SitePlanCandidat
     Lv - bd - gap
   );
 
-  // ---- ④ 院子：矩形挖掉配套 / 后勤
+  // ---- ④ 院子：先算不 add —— 院内步道要从它身上切出去（⑤ 末尾统一 add）
   const courtRaw = cutAll(bd, Lu - bd, bd, Lv - bd);
   if (courtRaw.length === 0) return null;
   const courtParts = courtRaw;
-  let courtAdded = false;
-  for (const piece of courtParts) {
-    if (surfaceArea(piece) < U(1) * U(1)) continue;
-    add('courtyard', piece, '主轴围合院子');
-    courtAdded = true;
-  }
-  if (!courtAdded) return null;
+  if (courtParts.every((p) => surfaceArea(p) < U(1) * U(1))) return null;
 
   // ---- ⑤ 三条 bar：两条侧边 + 一条远端。
   //      临街那一侧**不设 bar** —— 街只有 18~27 m，把整条边盖满等于给
@@ -272,8 +266,46 @@ export function buildPrincipalCourtCandidate(ctx: SiteContext): SitePlanCandidat
   // 硬塞进地面表会被"碎片"惩罚算成切碎（544:-100 就是这么输掉 0.6 分的）。
   const foreS = cut(sFrontLo, sFrontHi, 0, bd);
   add('entrance_forecourt', foreS && shortestSideM(foreS) >= 3 ? foreS : null, '入口前场（临街）');
-  const walkS = cut(midU - U(2.5), midU + U(2.5), bd, bd + U(14));
-  add('pedestrian', walkS && shortestSideM(walkS) >= 3 ? walkS : null, '入口轴（街 → 院子）');
+  // ---- 院内步行骨架（R8）
+  //
+  // 原来只有一条 14 m 的"入口轴"就停在院子中间，院子本身是整块草坪 ——
+  // 2D 上读起来是"一块绿毯"，人走到一半就没路了。
+  // 现在主步道一直贯穿到远端 bar，院子够大时再加一条横向支路串两侧 bar，
+  // 草坪被切成 2~4 块，这才是围合院的样子。
+  const walks: PlanSurface[] = [];
+  // 主步道从**院子边**（bd）起，不要从 0 起 —— 临街带里有前场和地面停车，
+  // 从 0 起会直接压在停车上（实测 parking×pedestrian 6581 m² / 27 处，
+  // 大部分来自这一条）。
+  const walkMain = cut(midU - U(2.5), midU + U(2.5), bd, Lv - bd);
+  if (walkMain && shortestSideM(walkMain) >= 3) walks.push(walkMain);
+
+  const inW = (Lu - 2 * bd) * 7;
+  const inD = (Lv - 2 * bd) * 7;
+  if (inW >= 26 && inD >= 22) {
+    const cvMid = bd + (Lv - 2 * bd) * 0.5;
+    // 横路只能在**院子范围内**（bd..Lu-bd），早先写成 0..Lu 会压到左右两条 bar
+    const cross = cut(bd, Lu - bd, cvMid - U(2), cvMid + U(2));
+    if (cross) {
+      // 十字交叉点减去主步道，避免两块面叠在一起
+      const halves = walkMain ? surfaceSubtract([cross], [walkMain]) : [cross];
+      for (const h of halves) if (shortestSideM(h) >= 3) walks.push(h);
+    }
+  }
+
+  // 草坪 = 院子 − 步道 − 配套 − 后勤。
+  // 配套/后勤本来就落在院子矩形里，早先只写了注释"挖掉"却真的没挖，
+  // courtyard × amenity 因此重叠了 3772 m² / 9 处。
+  const carveOut = [amenityS, serviceS, ...walks].filter((x): x is PlanSurface => !!x);
+  const lawn = carveOut.length > 0 ? surfaceSubtract(courtRaw, carveOut) : courtRaw;
+  let courtAdded = false;
+  for (const piece of lawn) {
+    if (surfaceArea(piece) < U(1) * U(1)) continue;
+    add('courtyard', piece, '主轴围合院子');
+    courtAdded = true;
+  }
+  for (const w of walks) add('pedestrian', w, '院内步道（街 → 各栋）');
+  if (!courtAdded) return null;
+  notes.push(`院内步道 ${walks.length} 条，草坪 ${lawn.length} 块`);
 
   // 临街带里前场之外的部分：靠入口一侧做地面停车，另一侧做绿化
   const parkSide = cut(sFrontHi, Lu, 0, bd);

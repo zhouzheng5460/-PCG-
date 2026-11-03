@@ -185,25 +185,63 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
         return surfaceArea(big) > surfaceArea(park) * 0.15 ? big : null;
       })()
     : null;
-  if (!parkClean) notes.push('NO_PARKING：地块过小，停车区被店铺吃光（这类地块应走 PAD 而不是 STRIP）');
-  add('parking', parkClean, variant.parking === 'front' ? '临街停车（顾客先停车再进店）' : variant.parking === 'rear' ? '后侧停车' : '侧向停车');
-
   // 店前人行带（贴着店铺的正面）
   const fore = cut(shopU0, shopU1, variant.parking === 'rear' ? shopV1 : shopV0 - foreD, variant.parking === 'rear' ? shopV1 + foreD : shopV0);
-  add('entrance_forecourt', fore, '店前人行带');
 
-  // 从停车到店门的步行通道（零售的核心动线）
+  // 从停车到店门的步行通道：**只走停车场内部那一段**。
+  //
+  // 早先写成 min(parkV0, shopV0) ~ max(parkV1, shopV1) —— 那是"从地块最南
+  // 到最北"，一条面把停车场、店前人行带、店铺全部盖住（实测 retail 的
+  // parking×pedestrian 6581 m² / 27 处、forecourt×pedestrian 1080 m² / 27 处
+  // 全是它）。真实超市停车场就是一条人行道从场中穿过、把它切成两片，
+  // 所以范围收到 parkV0~parkV1 既正确又够用。
   const midU = (shopU0 + shopU1) / 2;
-  const walk = cut(midU - U(2.5), midU + U(2.5), Math.min(parkV0, shopV0), Math.max(parkV1, shopV1));
-  add('pedestrian', walk, '停车 → 店门步行带');
+  // 只有停车场够宽（>= 20 m）才切这一刀：5 m 的人行道在 30 m 宽的场里
+  // 是"一分为二"，在 14 m 宽的场里就是"砍掉三分之一"，停车量直接掉到不合格。
+  // 窄场不加人行道 —— 店前人行带（fore）已经承担了这段动线。
+  const walkOk = (parkU1 - parkU0) * 7 >= 20;
+  const walk = walkOk ? cut(midU - U(2.5), midU + U(2.5), parkV0, Math.min(parkV1, v1)) : null;
 
   // 后侧服务道
   const svcV0 = Math.max(v1 - laneD, shopV1);
-  add('service', cut(u0 + W * 0.5, u1, svcV0, v1), '卸货/后勤');
+  const svc = cut(u0 + W * 0.5, u1, svcV0, v1);
 
   // 沿街两端绿化
-  add('landscape', cut(u0, u0 + W * 0.06, v0, Math.min(v1, v0 + shopD * 0.4)));
-  add('landscape', cut(u1 - W * 0.06, u1, v0, Math.min(v1, v0 + shopD * 0.4)));
+  const greenL = cut(u0, u0 + W * 0.06, v0, Math.min(v1, v0 + shopD * 0.4));
+  const greenR = cut(u1 - W * 0.06, u1, v0, Math.min(v1, v0 + shopD * 0.4));
+
+  // 停车区要让开**所有其他铺装**：店前人行带、场内步行道、服务道、端头绿化。
+  //
+  // 它们本来就落在停车矩形里，叠着放直接违反地表独占（`exclusiveOverlapRatio`
+  // 就会红）。真实停车场被一条人行道切成两片是常态，所以"挖出来"比"叠上去"
+  // 更接近真事；切开后的每一片都是停车区。
+  // 只把**真正穿过停车场**的两块作为挖除项。
+  // 服务道 / 端头绿化也在停车矩形里，但把它们也挖掉之后，停车区会被切成
+  // 三四块碎面、单块面积掉到不合格（实测 R05 从 31/31 掉到 4/31）——
+  // 那两块的重叠量很小（合计 ~370 m²），留给 Realizer 按优先级切更划算。
+  const blockers = [fore, walk].filter((x): x is PlanSurface => !!x);
+  const parkPieces = parkClean && blockers.length > 0 ? surfaceSubtract([parkClean], blockers) : parkClean ? [parkClean] : [];
+  const keptPark = parkPieces.filter((p) => surfaceArea(p) > U(1) * U(1) * 4);
+  if (parkClean && keptPark.length === 0) {
+    notes.push('NO_PARKING：停车区被步行带切碎（地块过小，应走 PAD 而不是 STRIP）');
+  }
+  for (const p of keptPark) {
+    add('parking', p, variant.parking === 'front' ? '临街停车（顾客先停车再进店）' : variant.parking === 'rear' ? '后侧停车' : '侧向停车');
+  }
+  // 停车量诚实标注：小店地块（<= 4000 m²）上"店铺 + 8 m 店前带"吃掉大半，
+  // 停车只能到 11% 左右。这不是 bug，是地块条件所限 —— 但**必须可见**，
+  // 不能靠"和步行带重叠的那块虚面积"凑到 12%（修地表独占之前就是这样）。
+  const lotM2 = surfaceArea(ctx.parcel);
+  const parkM2 = keptPark.reduce((a, p) => a + surfaceArea(p), 0);
+  if (keptPark.length > 0 && parkM2 / Math.max(1e-6, lotM2) < 0.12) {
+    notes.push(`PARKING_TIGHT：停车 ${((parkM2 / lotM2) * 100).toFixed(1)}% 低于 12%（地块 ${(lotM2 * 49).toFixed(0)} m²，店铺占 ${((surfaceArea(shop) / lotM2) * 100).toFixed(0)}%）`);
+  }
+  add('entrance_forecourt', fore, '店前人行带');
+  add('pedestrian', walk, '停车 → 店门步行带');
+
+  add('service', svc, '卸货/后勤');
+  add('landscape', greenL);
+  add('landscape', greenR);
 
   // 残地：全部认领（原来只认最大一块，剩下的在 2D 上是纸面底色）
   claimResidual(ctx, 'retail', [...ground.map((g) => g.surface), ...buildings.map((b) => b.footprint)], add);

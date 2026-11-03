@@ -99,7 +99,12 @@ export function retailParkingFit(parkRatio: number): number {
 export function retailDiagnostics(ctx: SiteContext, c: SitePlanCandidate): LayoutDiagnostics {
   const lotArea = Math.max(1e-6, surfaceArea(ctx.parcel));
   const shop = c.buildings.find((b) => b.role === 'podium' || b.role === 'office');
-  const parking = c.ground.find((g) => g.program === 'parking');
+  // 停车场可能被穿场步行道切成两片（真实超市就是这样），
+  // 所以**面积要按所有 parking 块合计**，不能只取第一块 ——
+  // 只取一块会让停车面积凭空减半，R05 直接判"停车区过小"。
+  const parkParts = c.ground.filter((g) => g.program === 'parking');
+  const parking = parkParts[0];
+  const parkArea = parkParts.reduce((a, g) => a + g.area, 0);
   const fore = c.ground.find((g) => g.program === 'entrance_forecourt');
   const pedRegion = c.ground.find((g) => g.program === 'pedestrian');
   const service = c.ground.find((g) => g.program === 'service');
@@ -127,7 +132,7 @@ export function retailDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layou
       const t = i / steps;
       const p = new Pt(ped.at.x + (door.x - ped.at.x) * t, ped.at.y + (door.y - ped.at.y) * t);
       // 穿过停车区且没有专门的步行带 → 扣分
-      if (parking && pointInRing(p, parking.surface.outer) && !pedRegion) blockedByCars++;
+      if (parkParts.some((g) => pointInRing(p, g.surface.outer)) && !pedRegion) blockedByCars++;
     }
     pedestrianClarity = clamp01(1 - blockedByCars / (steps - 1));
     if (pedRegion) pedestrianClarity = clamp01(pedestrianClarity + 0.12);
@@ -135,8 +140,8 @@ export function retailDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layou
   }
 
   // ③ 停车质量：面积落在经验带内 + 是否连成一片
-  const parkRatio = parking ? parking.area / lotArea : 0;
-  const parkFit = parking ? retailParkingFit(parkRatio) : 0;
+  const parkRatio = parkArea / lotArea;
+  const parkFit = parkParts.length > 0 ? retailParkingFit(parkRatio) : 0;
   const parkingQuality = parkFit;
 
   // ④ 人车货分离：服务口不能和顾客口同一条边
@@ -145,7 +150,7 @@ export function retailDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layou
   const serviceSeparation = !car ? 0.2 : svc ? (svc.frontage !== car.frontage ? 1 : 0.35) : 0.7;
 
   // ⑤ 循环：有没有贯通的车道（停车区是不是一整块、能不能绕）
-  const circulationQuality = clamp01(0.4 + (parking ? 0.4 : 0) + (c.circulation.length > 0 ? 0.2 : 0));
+  const circulationQuality = clamp01(0.4 + (parkParts.length > 0 ? 0.4 : 0) + (c.circulation.length > 0 ? 0.2 : 0));
 
   // ⑤b 开发强度：零售是单层，覆盖率≈FAR，按目标带拟合（R7.7）
   const buildingArea = c.buildings.reduce((a, b) => a + surfaceArea(b.footprint), 0);
@@ -202,7 +207,12 @@ export function retailProgramViolations(c: SitePlanCandidate): GroundProgram[] {
 /** 停车压不压店铺（生成器自检 + 测试用） */
 export function parkingOverlapsShop(c: SitePlanCandidate): number {
   const shop = c.buildings[0];
-  const parking = c.ground.find((g) => g.program === 'parking');
+  // 停车场可能被穿场步行道切成两片（真实超市就是这样），
+  // 所以**面积要按所有 parking 块合计**，不能只取第一块 ——
+  // 只取一块会让停车面积凭空减半，R05 直接判"停车区过小"。
+  const parkParts = c.ground.filter((g) => g.program === 'parking');
+  const parking = parkParts[0];
+  const parkArea = parkParts.reduce((a, g) => a + g.area, 0);
   if (!shop || !parking) return 0;
   return surfaceIntersect([parking.surface], [shop.footprint]).reduce((a, q) => a + surfaceArea(q), 0);
 }

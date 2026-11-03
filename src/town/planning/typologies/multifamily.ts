@@ -10,7 +10,7 @@
 import { Pt } from '../../../core/geom';
 import type { LayoutDiagnostics } from '../core/types';
 import type { GroundProgram, SitePlanCandidate } from '../core/candidate';
-import { surfaceArea, surfaceIntersect, pointInRing } from '../core/surface';
+import { surfaceArea, surfaceIntersect, surfaceUnion, pointInRing } from '../core/surface';
 import type { SiteContext } from '../core/types';
 
 /** 住宅权重（PRD §P2-MF.10 的数值，逐项对齐） */
@@ -95,7 +95,17 @@ export function mfDiagnostics(
   opts: { targetEnclosure?: number } = {}
 ): LayoutDiagnostics {
   const lotArea = Math.max(1e-6, surfaceArea(ctx.parcel));
-  const court = c.ground.find((g) => g.program === 'courtyard');
+  // 院子**不是一个面**，是一个域：草坪被院内步道切成几块，但它们在规划上
+  // 仍然是同一个院子。诊断必须按"院子域 = 草坪 ∪ 院内步道"来读，
+  // 否则拿第一块草坪去量围合度，切得越规整分越低 —— 度量在惩罚正确做法。
+  const courtParts = c.ground.filter((g) => g.program === 'courtyard');
+  const courtWalks = c.ground.filter((g) => g.program === 'pedestrian');
+  const courtDomain = courtParts.length
+    ? surfaceUnion([...courtParts.map((g) => g.surface), ...courtWalks.map((g) => g.surface)])
+    : [];
+  // 草坪净面积（不含步道）—— 开放空间率要的是这个
+  const courtLawn = courtParts.reduce((a, g) => a + g.area, 0);
+  const court = courtParts[0] ?? null;
   const parking = c.ground.find((g) => g.program === 'parking');
   const fore = c.ground.find((g) => g.program === 'entrance_forecourt');
   const amenity = c.ground.find((g) => g.program === 'amenity');
@@ -103,27 +113,43 @@ export function mfDiagnostics(
   const residual = c.ground.find((g) => g.program === 'residual');
   const target = opts.targetEnclosure ?? 0.9;
 
-  // ① 围合度：院子四条边，各取中点向外探 0.45 单位，看是否落在建筑里
+  // ① 围合度：沿院子域的周长**等距采样**，每个探针向外 0.45 单位看是否落在建筑里。
+  //
+  //   原来每条边只取一个中点 —— 加了 5 m 入口门洞之后，门洞正好开在临街边的
+  //   正中，一个中点就把"有楼但中间有门"误判成"这一侧完全没围合"。
+  //   采样步长 4 m，门洞只占它该占的比例。
   let enclosed = 0;
-  if (court) {
-    const ring = court.surface.outer;
-    const ctr = centroid(ring);
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i];
-      const b = ring[(i + 1) % ring.length];
-      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const n = norm(new Pt(mid.x - ctr.x, mid.y - ctr.y));
-      const probe = { x: mid.x + n.x * 0.45, y: mid.y + n.y * 0.45 };
-      if (c.buildings.some((bld) => pointInRing(new Pt(probe.x, probe.y), bld.footprint.outer))) enclosed++;
+  let samples = 0;
+  if (courtDomain.length > 0) {
+    // 每 4 m 一个探针（7 m 一个世界单位）
+    const stepLen = 4 / 7;
+    for (const dom of courtDomain) {
+      const ring = dom.outer;
+      if (ring.length < 3) continue;
+      const ctr = centroid(ring);
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i];
+        const b = ring[(i + 1) % ring.length];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        if (len < 1e-9) continue;
+        const k = Math.max(1, Math.round(len / stepLen));
+        for (let j = 0; j < k; j++) {
+          const t = (j + 0.5) / k;
+          const mid = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+          const n = norm(new Pt(mid.x - ctr.x, mid.y - ctr.y));
+          const probe = { x: mid.x + n.x * 0.45, y: mid.y + n.y * 0.45 };
+          if (c.buildings.some((bld) => pointInRing(new Pt(probe.x, probe.y), bld.footprint.outer))) enclosed++;
+          samples++;
+        }
+      }
     }
-    if (ring.length === 0) enclosed = 0;
-    else enclosed = enclosed / ring.length;
+    enclosed = samples > 0 ? enclosed / samples : 0;
   }
 
   // ② 院子质量 = 尺寸富余 + 形状 + 围合（离目标越近越好）
   let spatialCoreQuality = 0;
-  if (court) {
-    const b = bbox(court.surface.outer);
+  if (courtDomain.length > 0) {
+    const b = bbox(courtDomain.flatMap((d) => d.outer));
     const wM = (b.maxX - b.minX) * 7;
     const dM = (b.maxY - b.minY) * 7;
     const size = clamp01(Math.min(wM / COURT_MIN_W_M, dM / COURT_MIN_D_M) / 2);
@@ -136,8 +162,11 @@ export function mfDiagnostics(
   // ③ 人行清晰度：入口到院子中心的直线有没有被停车切掉
   let pedestrianClarity = 0;
   const ped = c.access.find((a) => a.role === 'pedestrian');
-  if (ped && court) {
-    const ctr = centroid(court.surface.outer);
+  const domainBig = courtDomain.length
+    ? courtDomain.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b))
+    : null;
+  if (ped && domainBig) {
+    const ctr = centroid(domainBig.outer);
     const steps = 12;
     let blocked = 0;
     for (let i = 1; i < steps; i++) {
@@ -165,7 +194,7 @@ export function mfDiagnostics(
 
   const frontageQuality = ctx.primaryFrontage ? ctx.primaryFrontage.score : 0.2;
   const openSpaceQuality = clamp01(
-    ((court?.area ?? 0) + (amenity?.area ?? 0) + land.reduce((a, g) => a + g.area, 0)) / lotArea / 0.3
+    (courtLawn + (amenity?.area ?? 0) + land.reduce((a, g) => a + g.area, 0)) / lotArea / 0.3
   );
 
   // ⑥ 惩罚
