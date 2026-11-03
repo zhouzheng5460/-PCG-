@@ -81,7 +81,36 @@ export function buildSiteContext(input: SiteContextInput): SiteContext {
   const roadEdges = input.edges.slice();
   const frontages = resolveFrontages(parcel, roadEdges, notes);
 
-  const buildable = resolveBuildable(parcel, input.setback, input.obstacles, notes);
+  // 转角地块的退线收紧。
+  //
+  // 街角是城市里最容易被眼睛读到的地方，但现在的几何是"收口 5.5~10 m
+  //（路口铺装延伸）+ 退线 5 m"，建筑离路口中心 12~16 m —— 实测以度≥3 的
+  // 路口顶点为圆心，8 m 环内只有 21% 有建筑，街角读起来是空的。
+  //
+  // 判据用**真转角**（primary 与 secondary 方向差 >25°），不是"有两条临街面"：
+  // 夹在两条平行街之间的地块方向差只有 0~14°，它不是转角，不该收紧。
+  const cornerBetween = (() => {
+    const p = frontages.primary;
+    const q = frontages.secondary;
+    if (!p || !q) return 0;
+    const ang = (f: NonNullable<typeof p>) =>
+      Math.atan2(f.parcelEdge[1].y - f.parcelEdge[0].y, f.parcelEdge[1].x - f.parcelEdge[0].x);
+    let d = Math.abs(ang(p) - ang(q)) % Math.PI;
+    if (d > Math.PI / 2) d = Math.PI - d;
+    return (d * 180) / Math.PI;
+  })();
+  const isCorner = cornerBetween > 25;
+  const baseSetback = input.setback ?? 5 / 7;
+  // 收到 0.7 倍（5 m → 3.5 m）：够把街角读出来，又不至于让沿街界面整体失控。
+  const buildable = resolveBuildable(
+    parcel,
+    isCorner ? baseSetback * 0.7 : input.setback,
+    input.obstacles,
+    notes
+  );
+  if (isCorner) {
+    notes.push(`转角地块（两面夹角 ${cornerBetween.toFixed(0)}°）：退线 ${(baseSetback * 7).toFixed(1)} → ${(baseSetback * 7 * 0.7).toFixed(1)} m`);
+  }
 
   const neighbors =
     input.neighbors ??

@@ -1104,10 +1104,18 @@ function cornerOf(a: JunctionArm, b: JunctionArm, cls: RoadClass, narrowW: numbe
   const reach = 0.9 * Math.min(dA, dB);
   if (reach < 1e-4) return chamfer();
 
-  // 三道封顶：规范值 / 可用切线长 / 最窄铺装带，再加一条 —— 弧不许鼓过
-  // 对面车道的中心线（r 超过半幅车行道，转出来的路口就是"喇叭口"）。
-  const fit = narrowW > 1e-3 ? Math.min(reach, narrowW * 0.92) : reach;
-  const roadCap = Math.max(0.05, 0.5 * Math.min(a.curbL + a.curbR, b.curbL + b.curbR));
+  // 三道封顶：规范值 / 可用切线长 / 红线允许的弧高，再加一条车行道封顶。
+  //
+  // 关键是第二道。弧的**最远点**离角点 = r/sin(θ/2) − r，90° 时约 0.414r ——
+  // 也就是说半径可以做到"铺装带宽度 / 0.414 ≈ 2.4 倍铺装带"才刚好贴到红线。
+  // 原来卡在 `narrowW × 0.92`（= 弧最多鼓出 0.38 倍铺装带），
+  // 30 m 宽的干道上转角半径被压到 3.5 m，俯视图上就是一道斜切。
+  // 取 2.2 留一点余量，保证弧不越红线。
+  const fit = narrowW > 1e-3 ? Math.min(reach, narrowW * 2.2) : reach;
+  // 车行道封顶：路口范围内整个横向都是铺装，弧探到边线之外一点是正常的；
+  // 原来卡在"半幅车行道"，对 7 m 车道就是 3.5 m，把规范值（支路 6~8 m、
+  // 干道 15~18 m）全压平了。放到 0.85 倍总宽，仍不会鼓过对面硬路肩。
+  const roadCap = Math.max(0.05, 0.85 * Math.min(a.curbL + a.curbR, b.curbL + b.curbR));
   const want = Math.min(cornerRadius(cls, reach / Math.max(Math.tan(turn / 2), 1e-3)), fit, roadCap);
   // 有地儿就必须是**弧**，哪怕只有 1 m 半径 —— 斜切会让街角出现一道直线的"削角"，
   // 俯视图上一眼就能看出这是几何塌了，而不是设计如此。
@@ -1147,7 +1155,15 @@ function arcPts(o: Pt, p0: Pt, p1: Pt, n: number): Pt[] {
 }
 
 /** 沿街角弧取这么多段。4 段在 90° 转角上是 22.5°/段，肉眼已经是圆的 */
-const ARC_SEGS = 4;
+/**
+ * 一条缘石弧用几段折线。
+ *
+ * 原来是 4 段 —— 对 3~4 m 的转角弧，每段对应约 22°，俯视图上读起来就是
+ * 一道**斜切**，而不是圆角。半径受"最窄铺装带"封顶（见 cornerOf 的三道封顶），
+ * 短时间提不上去，所以先把弧本身画圆：10 段时每段 9°，肉眼就是弧了。
+ * 顶点量：92 个路口 × 约 4 个角 × 10 段 ≈ 3.7k，可以接受。
+ */
+const ARC_SEGS = 10;
 
 /**
  * 街角铺装（给定这一层的两条铺装带宽度 wA / wB），返回一个多边形。
