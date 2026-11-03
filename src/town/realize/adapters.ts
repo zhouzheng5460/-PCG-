@@ -17,6 +17,7 @@ import {
   GROUND_LIFT,
   ROLE_TO_KIND,
   ROLE_MATERIAL,
+  TYPOLOGY_APPEARANCE,
   ACCESS_WIDTH_M,
   type RealizationContext,
   type RealizerPart,
@@ -81,9 +82,17 @@ export function realizeGround(
 
 /** R2 · PlannedBuilding → Solid（footprint 原样，只补材质与 kind） */
 export function realizeBuildings(c: SitePlanCandidate, ctx: RealizationContext, part: RealizerPart): void {
+  // 外观表：优先用 typology 的（住宅暖色 / 商业幕墙 / 工业面板），
+  // 没有就退回 role 的默认。同一个 typology 内按序号确定性交替，
+  // 让相邻两栋不完全同色 —— 全城一个色调会读成"素白大盒子"。
+  const look = ctx.typology ? TYPOLOGY_APPEARANCE[ctx.typology] : undefined;
   c.buildings.forEach((b, i) => {
     const kind = ROLE_TO_KIND[b.role] ?? 'podium';
-    const mat = ctx.overrides?.[b.role] ?? ROLE_MATERIAL[b.role] ?? ROLE_MATERIAL.podium;
+    const mat =
+      ctx.overrides?.[b.role] ??
+      (look ? look.walls[i % look.walls.length] : undefined) ??
+      ROLE_MATERIAL[b.role] ??
+      ROLE_MATERIAL.podium;
     part.solids.push({
       name: `${c.id}_bld_${i}_${b.role}`,
       group: ctx.group,

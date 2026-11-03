@@ -164,7 +164,12 @@ export function buildPlannerBundle(model: Model, net: RoadNet, mode: PlanningMod
 
     const best = selectBestCandidate(candidates);
     const cand = best.winner;
-    const realized = realizeSitePlan(cand, { group: `lot/${ctx.typology}`, solveParking: true });
+    const realized = realizeSitePlan(cand, {
+      group: `lot/${ctx.typology}`,
+      solveParking: true,
+      // typology 决定建筑外观（住宅暖色 / 商业幕墙 / 工业面板）
+      typology: ctx.typology,
+    });
 
     const feats: PlannerParcelFeatures = {
       surfaces: realized.surfaces,

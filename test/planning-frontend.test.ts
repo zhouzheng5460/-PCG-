@@ -151,7 +151,69 @@ ok('Planner 确实接管了地块', bundle.stats.covered > 0, `${bundle.stats.co
   );
 }
 
-// ---------------------------------------------------------------- ⑥ 只接三类
+// ---------------------------------------------------------------- ⑥ 视觉复核（R8）
+//
+// Visual Review 的成果必须能防回归：
+//   · Planner 接管的地块要有树（不然院子是空的，读起来像"这块地没规划"）；
+//   · 树不能压在建筑上、不能长在车位里；
+//   · 院子要用草坪而不是浅灰铺装（浅灰和屋面同色，大院子读成"空地"）；
+//   · 建筑外观要按 typology 分层（不能全城一个色调）。
+{
+  let withTree = 0;
+  let coveredCount = 0;
+  let treeOnBuilding = 0;
+  let treeOnParking = 0;
+  const wallByType = new Map<string, Set<string>>();
+
+  for (const [key, feats] of bundle.byParcel) {
+    const rep = bundle.reports.get(key)!;
+    coveredCount++;
+    if (feats.props.length > 0) withTree++;
+
+    // 树不能压建筑 / 车位
+    const bld = feats.solids.map((s) => s.ring);
+    const park = feats.surfaces.filter((s) => s.name.includes('parking') || s.name.includes('parkreq')).map((s) => s.ring);
+    for (const p of feats.props) {
+      if (p.kind !== 'tree' && p.kind !== 'treeSmall' && p.kind !== 'conifer') continue;
+      if (bld.some((r) => pointInRing(p.at, r))) treeOnBuilding++;
+      if (park.some((r) => pointInRing(p.at, r))) treeOnParking++;
+    }
+
+    const walls = new Set(feats.solids.map((s) => s.wallMat));
+    wallByType.set(rep.typology, walls);
+
+    // 院子材质
+    const court = feats.surfaces.find((s) => s.name.includes('courtyard'));
+    if (court) {
+      ok(`院子用草坪而不是浅灰铺装（${key}）`, court.mat === 'grassLight', court.mat);
+    }
+  }
+
+  // 树只长在"有绿地程序"的地块上：零售是条带商业，地块 40% 是停车场、
+  // 几乎没有绿地 program，所以那里本来就没树 —— 那是 archetype 的产出，
+  // 不是配景漏了。所以这条断言只看**绿地型 typology**。
+  const greenTypes = ['multi_family', 'industrial'];
+  let greenTotal = 0;
+  let greenWithTree = 0;
+  for (const [key, feats] of bundle.byParcel) {
+    const rep = bundle.reports.get(key)!;
+    if (!greenTypes.includes(rep.typology)) continue;
+    greenTotal++;
+    if (feats.props.length > 0) greenWithTree++;
+  }
+  ok('绿地型地块基本都有树', greenWithTree >= greenTotal * 0.8, `${greenWithTree}/${greenTotal}`);
+  ok('树不压建筑', treeOnBuilding === 0, `${treeOnBuilding}`);
+  ok('树不长在车位里', treeOnParking === 0, `${treeOnParking}`);
+  ok('住宅建筑外观有多种材质（不是全城一个色调）',
+    (wallByType.get('multi_family')?.size ?? 0) >= 2,
+    [...(wallByType.get('multi_family') ?? [])].join(','));
+  console.log(
+    `  视觉：${withTree}/${coveredCount} 块有树（绿地型 ${greenWithTree}/${greenTotal}）；住宅墙材质 ${[...(wallByType.get('multi_family') ?? [])].join('/')}；` +
+      `零售 ${[...(wallByType.get('retail') ?? [])].join('/')}；工业 ${[...(wallByType.get('industrial') ?? [])].join('/')}`
+  );
+}
+
+// ---------------------------------------------------------------- ⑦ 只接三类
 {
   ok('第一批只接三类', PLANNER_ENABLED_TYPOLOGIES.length === 3 &&
     PLANNER_ENABLED_TYPOLOGIES.includes('industrial') &&

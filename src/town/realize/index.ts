@@ -19,6 +19,7 @@ import {
 import { realizeParking } from './parking';
 import { surfaceUnion } from '../planning/core/surface';
 import { realizeRoads } from './road';
+import { realizeScenery } from './scenery';
 
 
 /** 道路的裁剪体：所有 Ground 的并集（地块内部的铺装范围），避免路探出红线 */
@@ -61,6 +62,10 @@ export function realizeSitePlan(candidate: SitePlanCandidate, ctx: RealizationCo
   const parkingStats = realizeParking(candidate, ctx, part, obstacles);
 
   realizeCirculation(candidate, ctx, part);
+
+  // R8 配景：把 Planner 标出来的绿地类 Ground Program 翻译成树。
+  // 放在最后 —— 这样才能同时避开建筑、车位与货场。
+  realizeScenery(candidate, part, ctx.group, ctx.scenery !== false);
 
   // Realizer 自检：几何不许被改动
   const drift = assertNoGeometryDrift(candidate, part);

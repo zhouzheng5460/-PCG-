@@ -143,14 +143,88 @@ Intensity: FAR ×6 2.1 / preferred 1.4–2.2 · 带内(优)
 
 ---
 
-## 8. 这一步**没有**做的事（留给 R8 Visual Review）
+## 8. R8 Visual Review（表现层，已落地）
 
-- **palette 统一**：Planner 的建筑现在是默认的素白大盒，材质层次（墙/屋面/裙房）没做；
-- **缺树**：legacy 地块有行道树，Planner 接管的地块没有（`props` 只有开口和车位）；
-- **院子材质**：`stonePave` 的大院子在 2D 里是一大片浅灰，缺少草地 / 水景的层次；
-- **停车线 / curb / sidewalk 层级**：2D 还看不出立体关系；
-- **3D 高度层次**：6 层板楼和 1 层大盒在 3D 里区分度不够；
-- **轮廓层级 L0/L1/L2**：未做。
+接线做完之后做视觉复核。**全部是表现层的事，不碰任何规划几何与评分**。
 
-这些都属于"看起来像不像专业方案"，不影响"跑的是不是 Planner"这条判定 ——
-所以按用户的排序，**先接链路，再做视觉**。
+### 8.1 诊断（先量，再改）
+
+| 要素 | legacy | Planner（改进前） | 问题 |
+|---|---|---|---|
+| 墙体 | concrete 255 / panel 97 / glass 33 | concrete 145 / stone 38 / panel 6 | **wallGlass 归零** —— 全城一个色调 |
+| 树 | 3639 | 3035 | Planner 接管的地块**内部一棵树都没有** |
+| 院子 | — | stonePave 大片浅灰 | 和屋面 roofLight 几乎同色 → 读成"空地" |
+| 建筑厚度 | 小房子自带颗粒感 | 大板楼是一块平色 | 没有厚度线索 |
+
+### 8.2 四项改动
+
+**① 地块内配景（`src/town/realize/scenery.ts`，新增）**
+
+Planner 接管的地块走的是另一条链，`modern.ts` 那套地块内部配景不会跑，
+于是院子是空的。补一个 `realizeScenery()`：读 Candidate 已经定好的
+Ground Program（courtyard / landscape / amenity / landscape_buffer…），
+按程序撒树。仍然是纯转译 —— 不决定"哪儿该有树"（Planner 已经用 program 标出来了），
+只把这些 program 翻译成看得见的树。
+
+撒点用「固定网格 + 抖动」，抖动量由 `candidate.id` 的哈希决定 → 确定性。
+并且避开**建筑 footprint、车位、货场**（车位上不长树）。
+
+实测：树 3035 → **3291**（+256）、针叶 173 → 330、小树 37 → 134。
+
+**② 建筑外观按 typology 分层（`TYPOLOGY_APPEARANCE`）**
+
+legacy 链里住宅是 `brick / concrete 随机`、板楼是 `concrete / panel 随机`、
+塔楼是玻璃幕墙 —— 于是俯视图上**一眼能读出这是住宅区还是商业区**。
+Planner 链早期把 `house` 固定成 wallConcrete，全城一个色调（"素白大盒子"）。
+
+现在每个 typology 有一组墙/屋面候选，按建筑序号确定性交替：
+
+| typology | 外观 |
+|---|---|
+| multi_family | 砖红 / 涂料交替，平屋顶 |
+| retail | 玻璃幕墙为主 |
+| industrial | 金属面板 / 混凝土 |
+| hotel / dc / single_family | （暂未接入，但表已备好） |
+
+实测：wallBrick 0 → 65、wallGlass 0 → 27、roofFlat 0 → 29。
+
+**③ 院子材质：stonePave → grassLight**
+
+`stonePave`(0.757) 和 `roofLight`(0.615) 在俯视图里几乎同色，
+一大片院子读起来像"这块地空着"。换成修剪草坪之后，
+院子 / 绿化(grass) / 铺装(paver) 三层一眼分得开。
+
+**④ 2D 建筑加假投影 + 轮廓随体量加重（`view2d.ts`）**
+
+同样是屋顶色，大板楼读起来像"一块铺装"，小房子才像"房子" —— 差的是厚度线索。
+沿右下压一层半透明深色，体块立刻立起来。纯表现层，不碰几何。
+
+### 8.3 视觉验收（浏览器实测）
+
+| 截图 | 内容 |
+|---|---|
+| `out/r8-planner.png` | 全城：院子是绿的、有树、住宅砖红、商业幕墙、工业金属板 |
+| `out/r8-close-mf.png` | 住宅地块特写：3 栋 6 层板楼 + 绿院子 + 树 + 停车位线 |
+| `out/r8-close-ret.png` | 零售地块特写：店铺 + 顾客停车（车位线）+ 前场 + 后侧服务 |
+| `out/r8-close-ind.png` | 工业地块特写 |
+| `out/r8-3d-close-mf.png` | 3D 特写：6 层板楼的高度、绿院子、行道树、斑马线 |
+
+### 8.4 防回归（`test/planning-frontend.test.ts` 231 项）
+
+- 绿地型 typology 的地块 ≥80% 有树；
+- 树不压建筑、不长在车位里；
+- 院子材质必须是 `grassLight`；
+- 建筑外观按 typology 有多种材质（不能全城一个色调）。
+
+### 8.5 这一步**没做**的（属于规划层，按"停止 Calibration"的指令先记着）
+
+| 现象 | 属于哪一层 | 备注 |
+|---|---|---|
+| 零售地块 40% 是停车、几乎没有绿地 → 没树 | archetype | strip retail 需要一条沿街绿化带 |
+| `amenity`（会客场地）是院子正中一块规则矩形 | archetype | 斜边地块上"院子一角"落到了中间 |
+| 住宅地块 9% 的可建区没被任何 program 认领 | archetype | 现在是纸面底色，视觉上是"脏点" |
+| 2D 里的停车位线偏细、curb / sidewalk 层级弱 | Realizer | 车位线已画，但线宽与层级没做 |
+| L0/L1/L2 轮廓层级 | 场景层 | 未做 |
+
+这些都会改变 archetype 的产出（进而影响评分与 winner），
+所以**没有**在 Visual Review 这一轮里动 —— 等明确排期。

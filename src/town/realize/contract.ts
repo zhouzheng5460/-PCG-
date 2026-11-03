@@ -71,6 +71,13 @@ export interface RealizationContext {
   solveParking?: boolean;
   /** 建筑材质覆盖（不覆盖就用 role 的默认值） */
   overrides?: Partial<Record<string, { wall: MatKey; roof: MatKey }>>;
+  /**
+   * 是否生成地块内配景（树）。默认 true。
+   * 关掉它只是不种树，不影响任何规划几何 —— 它是外观层的事。
+   */
+  scenery?: boolean;
+  /** 地块用途（用来区分不同 typology 的建筑外观：住宅暖色、商业幕墙…） */
+  typology?: string;
 }
 
 /** Ground Program → 材质（R1 的唯一映射表，场景代码里不许再散落 if/else） */
@@ -84,7 +91,10 @@ export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
   landscape_buffer: 'grass',
   utility_yard: 'gravel',
   // 住宅 / 零售 / 酒店共用
-  courtyard: 'stonePave',
+  // 院子用**修剪草坪**而不是浅灰铺装：stonePave(0.757) 和屋面 roofLight(0.615)
+  // 在俯视图里几乎同色，一大片院子读起来像"这块地空着"。
+  // 换成 grassLight 之后，院子 / 绿化(grass) / 铺装(paver) 三层一眼分得开。
+  courtyard: 'grassLight',
   amenity: 'paver',
   entrance_forecourt: 'stonePave',
   pedestrian: 'paver',
@@ -133,6 +143,70 @@ export const ROLE_TO_KIND: Record<string, SolidKind> = {
   office: 'retail',
   amenity: 'podium',
   slab: 'slab',
+};
+
+/**
+ * 按 typology 的建筑外观（R8 Visual Review）。
+ *
+ * 为什么要按 typology 分，而不只用 role：
+ * legacy 链里住宅是 `brick / concrete 随机`、板楼是 `concrete / panel 随机`，
+ * 于是俯视图上住宅是暖色斑驳、板楼是灰白、塔楼是玻璃幕墙 ——
+ * **一眼能读出"这是住宅区 / 商业区 / 工业区"**。
+ *
+ * Planner 链早期把 `house` 固定成 wallConcrete，全城一个色调，
+ * "素白大盒子"就是这么来的（wallGlass 数量从 33 掉到 0）。
+ *
+ * 这里给每个 typology 定一组墙/屋面候选，并按建筑序号确定性交替 ——
+ * 同一片里相邻两栋不完全同色，但重建一次结果不变。
+ */
+export const TYPOLOGY_APPEARANCE: Record<
+  string,
+  { walls: { wall: MatKey; roof: MatKey }[]; note: string }
+> = {
+  multi_family: {
+    // 多层住宅：暖色涂料 + 平屋顶，女儿墙在 2D 里靠墙面色带读出来
+    walls: [
+      { wall: 'wallBrick', roof: 'roofLight' },
+      { wall: 'wallConcrete', roof: 'roofFlat' },
+      { wall: 'wallBrick', roof: 'roofLight' },
+    ],
+    note: '多层住宅：砖红 / 涂料交替',
+  },
+  single_family: {
+    walls: [
+      { wall: 'wallBrick', roof: 'roofLight' },
+      { wall: 'wallStone', roof: 'roofLight' },
+      { wall: 'wallConcrete', roof: 'roofFlat' },
+    ],
+    note: '独栋：暖色为主',
+  },
+  retail: {
+    // 商业：大面玻璃幕墙 + 女儿墙檐口
+    walls: [
+      { wall: 'wallGlass', roof: 'roofLight' },
+      { wall: 'wallPanel', roof: 'roofLight' },
+      { wall: 'wallStone', roof: 'roofFlat' },
+    ],
+    note: '零售：玻璃幕墙为主',
+  },
+  hotel: {
+    walls: [
+      { wall: 'wallStone', roof: 'roofFlat' },
+      { wall: 'wallGlass', roof: 'roofLight' },
+    ],
+    note: '酒店：石材 + 玻璃',
+  },
+  data_center: {
+    walls: [{ wall: 'wallPanel', roof: 'roofMetal' }],
+    note: '数据中心：金属面板',
+  },
+  industrial: {
+    walls: [
+      { wall: 'wallPanel', roof: 'roofMetal' },
+      { wall: 'wallConcrete', roof: 'roofMetal' },
+    ],
+    note: '工业：金属面板 / 混凝土',
+  },
 };
 
 /** 每种 role 的默认墙 / 屋面材质 */

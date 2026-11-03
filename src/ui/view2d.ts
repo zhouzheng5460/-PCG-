@@ -358,6 +358,19 @@ export class View2D {
     this.requestDraw();
   }
 
+  /**
+   * 把镜头移到某个世界坐标（3D 那边早就有 focusOn，2D 这边补上）。
+   *
+   * 用途：R8 的前端验收要能"凑近看一块地"——
+   * 全城视图看不出停车线、树、路缘这些细节，必须能拉到地块尺度。
+   */
+  focusOn(x: number, y: number, scale = 26): void {
+    this.cam.x = x;
+    this.cam.y = y;
+    this.cam.scale = Math.max(0.4, Math.min(120, scale));
+    this.requestDraw();
+  }
+
   private worldToScreen(p: Pt): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect();
     return {
@@ -1322,13 +1335,30 @@ export class View2D {
       }
     }
 
-    // 建筑：屋顶色填充 + 墙色描边。拖点时隐藏，避免显示上一帧的旧轮廓。
+    // 建筑：屋顶色填充 + 墙色描边 + 假投影。拖点时隐藏，避免显示上一帧的旧轮廓。
+    //
+    // 假投影是 R8 视觉复核加的：Planner 的体块是**大板楼**（一栋几百平米），
+    // 而 legacy 是**一堆小房子**。同样一块屋顶色，大板楼读起来就是"一块铺装"，
+    // 小房子读起来才像"房子" —— 因为没有厚度线索。
+    // 沿右下方向压一层半透明深色，体块立刻立起来；这是纯表现层的事，
+    // 不碰任何规划几何。
     if (!this.dragVertex) {
+      const shadow = Math.max(0.6, 1.4 * px);
+      for (const s of scene.solids) {
+        if (!this.vis(layerOfSolid(s))) continue;
+        ctx.save();
+        ctx.translate(shadow, shadow);
+        ctx.fillStyle = 'rgba(24, 22, 18, 0.20)';
+        this.tracePath(s.ring);
+        ctx.fill();
+        ctx.restore();
+      }
       for (const s of scene.solids) {
         if (!this.vis(layerOfSolid(s))) continue;
         ctx.fillStyle = css(s.roofMat);
         ctx.strokeStyle = css(s.wallMat);
-        ctx.lineWidth = STROKE * px * 1.2;
+        // 描边跟着体量走：大板楼的边缘要更实，否则和旁边的铺装糊在一起
+        ctx.lineWidth = STROKE * px * (s.h > 1.4 ? 1.9 : 1.2);
         ctx.lineJoin = 'miter';
         this.tracePath(s.ring);
         ctx.fill();

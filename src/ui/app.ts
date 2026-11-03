@@ -1809,6 +1809,21 @@ function boot(): void {
     }
   });
 
+  // ?focus=<patchKey>：把镜头拉到那块地（R8 前端验收要看地块尺度）
+  {
+    const fk = q.get('focus');
+    if (fk) {
+      const p = findPatchByKey(fk);
+      if (p) {
+        const c = patchCenter(p);
+        view2d.focusOn(c.x, c.y, Number(q.get('zoom') ?? 26));
+        selectedPatchKey = fk;
+        view2d.setSelectedPatch(p);
+        buildRight();
+      }
+    }
+  }
+
   if (q.get('view') === '3d') switchView('3d');
 
   toast('左栏控制显隐与指标，右栏调生成参数');
