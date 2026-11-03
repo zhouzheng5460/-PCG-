@@ -537,16 +537,49 @@ export function buildRoadNet(model: Model): RoadNet {
       let pad = 0;
       for (const b of arms) {
         if (b === a) continue;
-        const cross = Math.abs(a.dir.x * b.dir.y - a.dir.y * b.dir.x);
+        const cr = a.dir.x * b.dir.y - a.dir.y * b.dir.x;
+        const cross = Math.abs(cr);
         // 共线 / 近乎共线的臂（一条直路的两段）不构成转角，跳过
         if (cross < 0.3) continue;
-        for (const off of [b.curbL + b.swL + b.vgL, -(b.curbR + b.swR + b.vgR)]) {
+
+        // ① 红线交点：路口铺装至少要退到邻臂红线之外，否则街角那块铺装没地方放。
+        let redPad = 0;
+        let narrowAtB = 0;
+        for (const [off, w] of [
+          [b.curbL + b.swL + b.vgL, b.swL + b.vgL],
+          [-(b.curbR + b.swR + b.vgR), b.swR + b.vgR],
+        ]) {
           // b 的红线：过 b.origin + n_b·off，方向 dir_b
           const q = new Pt(b.origin.x + b.n.x * off, b.origin.y + b.n.y * off);
           const hit = lineHit(a.origin, a.dir, q, b.dir);
           if (!hit) continue;
           const d = (hit.x - a.origin.x) * a.dir.x + (hit.y - a.origin.y) * a.dir.y;
-          if (d > pad) pad = d;
+          if (d > redPad) {
+            redPad = d;
+            narrowAtB = w;
+          }
+        }
+        if (redPad > 0) pad = Math.max(pad, redPad);
+
+        // ② 转角弧的切点：**这才是半径真正的约束**。
+        //
+        // 路上实际发生的是：缘石弧从两条路缘的角点开始，沿路缘退 t = r·tan(φ/2)
+        // 才切到圆。φ 是两条路缘的夹角（= π − 中心线夹角），所以
+        // t = r / tan(θ/2)（θ = 中心线夹角）。
+        //
+        // 如果收口点离角点比 t 还近，切点就落在直路段上 —— 弧被 reach 卡住，
+        // 半径只能做到"铺装带宽度"这一量级（实测 2.4 m，规范是 6~18 m）。
+        // 所以收口要按"角点 + 切线长"重算，而不是停在邻臂红线上。
+        //
+        // 角点到 a.origin 的距离可以从红线交点反推：两者差 narrow/sin(θ)。
+        if (redPad > 0) {
+          const sinT = Math.max(0.15, cross);
+          const dCorner = redPad - narrowAtB / sinT;
+          const turnMid = Math.acos(clamp(a.dir.x * b.dir.x + a.dir.y * b.dir.y, -1, 1));
+          const tanHalf = Math.tan(turnMid / 2);
+          // θ 接近 π（两臂几乎反向）时 tanHalf 爆掉，切线长退化为 0 —— 那本来也不是转角
+          const tNeed = tanHalf > 1e-3 ? u(specOf(a.cls).cornerRadius) / tanHalf : 0;
+          if (dCorner > 0 && tNeed > 0) pad = Math.max(pad, dCorner + tNeed);
         }
       }
       const own = Math.max(a.curbL + a.swL + a.vgL, a.curbR + a.swR + a.vgR);
@@ -1104,19 +1137,17 @@ function cornerOf(a: JunctionArm, b: JunctionArm, cls: RoadClass, narrowW: numbe
   const reach = 0.9 * Math.min(dA, dB);
   if (reach < 1e-4) return chamfer();
 
-  // 三道封顶：规范值 / 可用切线长 / 红线允许的弧高，再加一条车行道封顶。
+  // 两道封顶：规范值（受可用切线长约束）+ 车行道总宽。
   //
-  // 关键是第二道。弧的**最远点**离角点 = r/sin(θ/2) − r，90° 时约 0.414r ——
-  // 也就是说半径可以做到"铺装带宽度 / 0.414 ≈ 2.4 倍铺装带"才刚好贴到红线。
-  // 原来卡在 `narrowW × 0.92`（= 弧最多鼓出 0.38 倍铺装带），
-  // 30 m 宽的干道上转角半径被压到 3.5 m，俯视图上就是一道斜切。
-  // 取 2.2 留一点余量，保证弧不越红线。
-  const fit = narrowW > 1e-3 ? Math.min(reach, narrowW * 2.2) : reach;
-  // 车行道封顶：路口范围内整个横向都是铺装，弧探到边线之外一点是正常的；
-  // 原来卡在"半幅车行道"，对 7 m 车道就是 3.5 m，把规范值（支路 6~8 m、
-  // 干道 15~18 m）全压平了。放到 0.85 倍总宽，仍不会鼓过对面硬路肩。
+  // 早先还有一道 `fit = narrowW × k`（narrowW = 人行道 + 绿化带），出发点是
+  // "弧不许越过红线"。但那个约束把几何看错了：**弧只在车行道里**，它的最远点
+  // 朝路口中心方向鼓，根本不碰人行道。真正的约束是"切线不能伸出收口点"，
+  // 也就是 reach —— 而 reach 现在由收口距离（按规范半径反推）保证。
+  // 卡上 fit 的后果是半径被锁死在铺装带那一量级（2.4 m，规范 6~18 m）。
+  //
+  // 车行道封顶仍然保留：弧鼓到对面硬路肩之外会让路口多边形自交。
   const roadCap = Math.max(0.05, 0.85 * Math.min(a.curbL + a.curbR, b.curbL + b.curbR));
-  const want = Math.min(cornerRadius(cls, reach / Math.max(Math.tan(turn / 2), 1e-3)), fit, roadCap);
+  const want = Math.min(cornerRadius(cls, reach / Math.max(Math.tan(turn / 2), 1e-3)), reach, roadCap);
   // 有地儿就必须是**弧**，哪怕只有 1 m 半径 —— 斜切会让街角出现一道直线的"削角"，
   // 俯视图上一眼就能看出这是几何塌了，而不是设计如此。
   const t = want * Math.tan(turn / 2);
