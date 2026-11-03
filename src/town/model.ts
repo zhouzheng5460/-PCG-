@@ -762,11 +762,14 @@ export class Model {
     // 街区尺度系数直接作用在"目标街区数"上：S = R / √(cells/π)，
     // 所以 cells / k² 正好让道路间距变成 k 倍，其余（minArea、流线间距）全是它的下游。
     //
-    // 下限 50 不是拍的：环形 / 格网布局的环数 n = round(√(cells/π))，n ≤ 3 时
-    // 最外圈接不成闭合路网 —— radial-10 在 k=1.2 就会留下 9 个孤立路口。
-    // 宁可让小城少压一点密度，也不能让它连通性崩掉。
+    // 下限 36 不是拍的：环形 / 格网布局的环数 n = round(√(cells/π))，
+    // n = 3（cells 28~44）时最外圈刚好还能闭合。原来写 50，
+    // 后果是 `spacingK` 一旦大于 1.22 就**完全失效**（75/k² < 50），
+    // 街区尺寸被死死钉在 86 m 见方 —— 而 86 m 的街区让 8 m 的路边退让
+    // 占掉 34% 面积，看起来就像"地块压在路上"。
+    // 真实小城的街区是 100~150 m，退让只占 10~15%。
     const k = this.params.block.spacingK;
-    const cells = Math.max(50, Math.round((this.nPatches * 5) / (k * k)));
+    const cells = Math.max(36, Math.round((this.nPatches * 5) / (k * k)));
     const radius = 42 + this.nPatches * 1.9;
     const grid = buildGridLayout({
       cells,

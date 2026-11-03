@@ -225,7 +225,12 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   const blockers = [fore, walk].filter((x): x is PlanSurface => !!x);
   const parkPieces = parkClean && blockers.length > 0 ? surfaceSubtract([parkClean], blockers) : parkClean ? [parkClean] : [];
   const keptPark = parkPieces.filter((p) => surfaceArea(p) > U(1) * U(1) * 4);
-  if (parkClean && keptPark.length === 0) {
+  // 两种"没停车"都要留痕（测试靠 NO_PARKING 区分"已知不足"和"意外不合格"）：
+  //   ① parkClean 为空 —— 地块太小，停车矩形被店铺吃光；
+  //   ② parkClean 有、但被步行带切碎到一块不剩。
+  if (!parkClean) {
+    notes.push('NO_PARKING：地块过小，停车区被店铺吃光（这类地块应走 PAD 而不是 STRIP）');
+  } else if (keptPark.length === 0) {
     notes.push('NO_PARKING：停车区被步行带切碎（地块过小，应走 PAD 而不是 STRIP）');
   }
   for (const p of keptPark) {

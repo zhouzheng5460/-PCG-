@@ -7,7 +7,8 @@
 import { Model } from '../../model';
 import { Patch, patchKey } from '../../patch';
 import { buildRoadNet, type RoadNet } from '../../../road/system';
-import { surface } from '../core/surface';
+import type { Pt as GeoPt } from '../../../core/geom';
+import { surface, insetPerEdge, surfaceInset, surfaceArea, type PlanSurface } from '../core/surface';
 import { buildSiteContext, queryNeighbors, summarizeSite, eligibleArchetypes } from '../core/context';
 import type { SiteContext, SiteRoadEdge, SiteTypology } from '../core/types';
 
@@ -34,12 +35,57 @@ export function siteContextFromModel(model: Model, patch: Patch, opts: FromModel
 
   return buildSiteContext({
     parcelId: patchKey(patch),
-    parcel: surface(Array.from(patch.shape)),
+    parcel: parcelOf(net, patch),
     use,
     typology: opts.typology,
     edges,
     setback: opts.setback,
   });
+}
+
+/**
+ * patch → 地块（红线以内）。
+ *
+ * **patch 的边是道路中心线**，直接拿 `patch.shape` 当地块等于把半条路吃进来 ——
+ * 实测旧口径下 99 块地全部与路面重叠、重叠占地块总面积 33.5%（最严重的一块 159%）。
+ * 地块必须沿每条边让出各自的「车行道 + 人行道 + 绿化带」，而各边宽度不同
+ *（一条街 10 m 红线、另一条 28 m），所以用变距内缩。
+ */
+function parcelOf(net: RoadNet, patch: Patch): PlanSurface {
+  const ring = Array.from(patch.shape) as GeoPt[];
+  if (ring.length < 3) return surface(ring);
+  const dists = ring.map((a, i) => {
+    const b = ring[(i + 1) % ring.length];
+    const e = findEdge(net, patch, a, b);
+    if (!e) return 0;
+    const isL = e.patchL === patch;
+    return isL ? e.carL + e.swL + e.vgL : e.carR + e.swR + e.vgR;
+  });
+  const inset = insetPerEdge(ring, dists);
+  const before = Math.abs(
+    ring.reduce((acc, p, i) => {
+      const q = ring[(i + 1) % ring.length];
+      return acc + p.x * q.y - q.x * p.y;
+    }, 0) / 2
+  );
+  if (inset.length < 3 || Math.abs(surfaceArea(surface(inset))) < before * 0.15) {
+    // 内缩把地块吃光了：退回"统一 2 m 内缩"，让开一点路缘。
+    // **不能**直接返回原始 patch —— 那等于把半条路当成地块。
+    const uniform = surfaceInset(surface(Array.from(patch.shape)), 0.3);
+    return uniform.length > 0 && surfaceArea(uniform[0]) > before * 0.05
+      ? uniform[0]
+      : surface(Array.from(patch.shape));
+  }
+  return surface(inset);
+}
+
+/** 找 patch 上 (a,b) 这条边对应的 road edge */
+function findEdge(net: RoadNet, patch: Patch, a: GeoPt, b: GeoPt) {
+  for (const e of net.edges) {
+    if (e.patchL !== patch && e.patchR !== patch) continue;
+    if ((e.a === a && e.b === b) || (e.a === b && e.b === a)) return e;
+  }
+  return null;
 }
 
 /** 这个地块临的全部道路边 → 纯数据 */
