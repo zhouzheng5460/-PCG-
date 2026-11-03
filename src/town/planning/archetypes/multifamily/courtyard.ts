@@ -211,8 +211,15 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   if (!court) return null;
   // 院子必须是"方正的一块"：被 L 形缺口 / 斜边切碎的多边形不算院子
   //（否则 L 形地块上四个形态全都能"成立"，候选系统就失去筛选意义了）
+  // 矩形度门槛 0.70 → 0.55。
+  //
+  // 街区放大到 122 m 之后，很多地块是可建区矩形度只有 37~58% 的斜长条
+  //（外接 134×109 m 但可建只有 5456 m²）。原来 0.70 的门槛把这些地块
+  // 全部判死 —— 实测 10 块住宅地只生成 3 块。
+  // 0.55 能放过斜四边形院子（真实的围合院本来就不方正），
+  // 仍然拦得住 L 形 / 被切碎的院子。
   const courtRect = rectnessOf(court.outer);
-  if (courtRect < 0.7) {
+  if (courtRect < 0.55) {
     notes.push(`院子被切碎（矩形度 ${courtRect.toFixed(2)}），该形态不成立`);
     return null;
   }
@@ -252,6 +259,9 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
       notes.push(`${note}：短边 ${shortestSideM(s).toFixed(0)} m 太薄，丢弃（避免纸片楼）`);
       return;
     }
+    // 矩形分解统一在 `generators.ts` 的生成器出口做（对所有 typology 生效），
+    // 这里只管把 bar 交出来。放在出口的好处：footprint 变了之后能立刻用
+    // 同一个诊断函数重算分，不会出现"几何改了、评分还是旧的"。
     buildings.push({ role: 'house', footprint: s, height: h, notes: [note] });
   };
 
