@@ -189,7 +189,11 @@ export function buildPrincipalCourtCandidate(ctx: SiteContext): SitePlanCandidat
     ground.push({ program, surface: s, area: surfaceArea(s), ...(note ? { notes: [note] } : {}) });
   };
   const buildings: PlannedBuilding[] = [];
-  const barHeight = U(18);
+  // 同 courtyard：临街（主轴方案的临街侧是敞开的，所以没有临街 bar）
+  // 侧边 6 层、远端 5 层，形成从外到内的退台
+  const hSide = U(18);
+  const hRear = U(15);
+  const barHeight = hSide;
 
   // ---- ③ 配套 / 后勤先算，院子再把它们挖掉
   //
@@ -225,17 +229,17 @@ export function buildPrincipalCourtCandidate(ctx: SiteContext): SitePlanCandidat
   // ---- ⑤ 三条 bar：两条侧边 + 一条远端。
   //      临街那一侧**不设 bar** —— 街只有 18~27 m，把整条边盖满等于给
   //      一条没有街的边造一栋 130 m 长的楼。街道那侧交给前场 + 停车。
-  const pushBar = (s: PlanSurface | null, note: string) => {
+  const pushBar = (s: PlanSurface | null, note: string, h: number = hSide) => {
     if (!s) return;
     if (shortestSideM(s) < 7) {
       notes.push(`${note}：短边 ${shortestSideM(s).toFixed(0)} m 太薄，丢弃（避免纸片楼）`);
       return;
     }
-    buildings.push({ role: 'house', footprint: s, height: barHeight, notes: [note] });
+    buildings.push({ role: 'house', footprint: s, height: h, notes: [note] });
   };
-  pushBar(cut(0, bd, bd, Lv - bd), '侧边 bar（左）');
-  pushBar(cut(Lu - bd, Lu, bd, Lv - bd), '侧边 bar（右）');
-  pushBar(cut(bd, Lu - bd, Lv - bd, Lv), '远端 bar');
+  pushBar(cut(0, bd, bd, Lv - bd), '侧边 bar（左）', hSide);
+  pushBar(cut(Lu - bd, Lu, bd, Lv - bd), '侧边 bar（右）', hSide);
+  pushBar(cut(bd, Lu - bd, Lv - bd, Lv), '远端 bar', hRear);
 
   if (buildings.length < 2) {
     notes.push(`主轴方案只立起 ${buildings.length} 条 bar，形态不成立`);

@@ -169,7 +169,10 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   if (variant.lShop) {
     // L 形：侧向再伸一条，挡住侧街视线，形成半围合前场
     const wing = cut(u0 + W * 0.62, u1, shopV0, shopV0 + shopD * 0.7);
-    if (wing) buildings.push({ role: 'podium', footprint: wing, height: U(7), notes: ['L 形侧翼'] });
+    // 侧翼抬到 9 m（约 2 层）：主店单层 7 m，侧翼做成端头的两层体量
+    //（仓储/办公），沿街才有高低差。原来主店和翼都是 7 m，
+    // 整条商业带是一块平板。
+    if (wing) buildings.push({ role: 'podium', footprint: wing, height: U(9), notes: ['L 形侧翼（两层端头）'] });
   }
 
   // 停车（矩形块）

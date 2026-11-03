@@ -1810,6 +1810,9 @@ function boot(): void {
   });
 
   // ?focusxy=<x>,<y>&zoom=<n>：按世界坐标聚焦（看路口 / 任意位置）
+  //
+  // 2D 和 3D 是两套相机，都要喂。早先只调了 view2d，于是 ?view=3d&focusxy=…
+  // 打开还是全城 —— 3D 特写根本没法截。
   {
     const fx = q.get('focusxy');
     if (fx) {
@@ -1835,6 +1838,19 @@ function boot(): void {
   }
 
   if (q.get('view') === '3d') switchView('3d');
+
+  // 3D 的聚焦必须排在 switchView 之后 —— view3d 是那里面才创建的，
+  // 提前调等于喂给一个还不存在的相机。
+  // span 是"取景半径（世界单位）"，2D 的 zoom 是像素/单位，两者语义不同。
+  {
+    const fx = q.get('focusxy');
+    if (fx && q.get('view') === '3d' && view3d) {
+      const [x, y] = fx.split(',').map(Number);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        view3d.focusOn(x, y, Number(q.get('span') ?? 1.4));
+      }
+    }
+  }
 
   toast('左栏控制显隐与指标，右栏调生成参数');
 }

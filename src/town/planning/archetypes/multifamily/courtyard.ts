@@ -232,8 +232,19 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   // 这里原本写的是 `U(6.5) // 6 层左右` —— 单位搞错了：U() 是"米 → 世界单位"，
   // 6.5 变成 6.5 米（≈2 层），整片 MF 在 3D 里是两层高的棚子。
   // Shadow 的体量代理暴露了它：基地面积 2.68× legacy，体积却只有 0.74×。
-  const barHeight = U(18);
-  const pushBar = (s: PlanSurface | null, note: string) => {
+  // ---- 高度分层：临街 7 层 / 侧边 6 层 / 后侧 5 层 ----
+  //
+  // 原来四条 bar 全是 6 层，围合式住宅在 3D 里就是**一圈等高的墙**，
+  // 沿街天际线完全平的。真实的围合住宅是从街到院内逐级退台：
+  // 临街最高（对外立面、采光好），后侧最矮（内部安静、退让邻居）。
+  //
+  // 只动高度、不动 footprint：覆盖率（强度带判据）不受影响，
+  // 变的只是 Shadow 的体量代理 —— 那本来就是用来比较"盖了多少体积"的。
+  const hFront = U(21); // 7 层
+  const hSide = U(18); // 6 层
+  const hRear = U(15); // 5 层
+  const barHeight = hSide;
+  const pushBar = (s: PlanSurface | null, note: string, h: number = hSide) => {
     if (!s) return;
     // 纸片楼过滤：短边 < 7 m 的 bar 在 3D 里是一张纸，而且会被"碎片"度量算成切碎。
     // 宁可这块地少一条 bar，也不要留一条纸片 —— 用户早就说过"尽量不要纸片楼"。
@@ -241,7 +252,7 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
       notes.push(`${note}：短边 ${shortestSideM(s).toFixed(0)} m 太薄，丢弃（避免纸片楼）`);
       return;
     }
-    buildings.push({ role: 'house', footprint: s, height: barHeight, notes: [note] });
+    buildings.push({ role: 'house', footprint: s, height: h, notes: [note] });
   };
 
   // 入口门洞是否开（面宽够才开；不够就整条 bar 保留，主步道只能从院子起）
@@ -253,22 +264,22 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     const bar = cut(u0, u1, v0, v0 + frontD);
     const gate = W * 7 >= 24 ? cut(entryU - U(2.5), entryU + U(2.5), v0 - U(1), v0 + frontD + U(1)) : null;
     const parts = bar && gate ? surfaceSubtract([bar], [gate]) : bar ? [bar] : [];
-    for (const part of parts) pushBar(part, gate ? '临街 bar（中留 5 m 入口门洞）' : '临街 bar（主街界面）');
+    for (const part of parts) pushBar(part, gate ? '临街 bar（中留 5 m 入口门洞）' : '临街 bar（主街界面）', hFront);
     gateOpen = !!gate;
   }
   // 后侧 bar **不占满面宽**：留出一段给停车。早先 rear bar 占满，停车只能往院子边上挤，
   // 结果"停车压院子"在 M01/M02/M07 全线报错 —— 住宅的停车必须退到侧后方，
   // 而后侧 bar 本身就是"后侧"，所以从它身上让一段最合理。
   const rearParkW = variant.rear ? W * 0.3 : 0;
-  if (variant.rear) pushBar(cut(u0, u1 - rearParkW - W * 0.02, v1 - rearD, v1), '后侧 bar（让出一段给停车）');
+  if (variant.rear) pushBar(cut(u0, u1 - rearParkW - W * 0.02, v1 - rearD, v1), '后侧 bar（让出一段给停车）', hRear);
   if (westD > 0) {
     // asymmetric：西侧只占院子的一段时间（形成 L 形），另一端让出来做通道。
     // 但缩短后的段如果不足 12 m 就成了纸片楼 —— 那种情况下宁可做满。
     let seg = variant.west < 0.8 ? 0.62 : 1;
     if (courtD * seg < U(12)) seg = 1;
-    pushBar(cut(u0, u0 + westD, cv0, cv0 + courtD * seg), `西侧 bar（占 ${(seg * 100).toFixed(0)}%）`);
+    pushBar(cut(u0, u0 + westD, cv0, cv0 + courtD * seg), `西侧 bar（占 ${(seg * 100).toFixed(0)}%）`, hSide);
   }
-  if (eastD > 0) pushBar(cut(u1 - eastD, u1, cv0, cv1), '东侧 bar');
+  if (eastD > 0) pushBar(cut(u1 - eastD, u1, cv0, cv1), '东侧 bar', hSide);
 
   if (buildings.length < 3) {
     notes.push(`围合不足（${buildings.length} 条 bar），该形态不成立`);
