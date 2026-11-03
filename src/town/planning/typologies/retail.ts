@@ -118,7 +118,32 @@ export function retailDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layou
   // 改成三段式：占到临街 65% 就该满分，占到 100% 不再额外奖励。
   const frontShare =
     shop && ctx.primaryFrontage ? longestSideM(shop.footprint.outer) / Math.max(1, ctx.primaryFrontage.edge.len * 7) : 0;
-  const frontageVisible = saturate(frontShare, 0.35, 0.65, 1.0);
+
+  // ② 店面**贴街**程度：从临街边到店铺 footprint 的最短距离（米）。
+  //
+  //    `frontShare` 只说明"店有多长"，说明不了"看不看得见店"。
+  //    front-park 变体把 24~30 m 的停车场摆在店前面，frontShare 仍然接近 1，
+  //    于是"街道被停车场占满"在评分上完全不受惩罚 —— 实测街墙率
+  //    front-park 17% / rear-park 75%，而两者当期得分几乎一样。
+  //    这是度量测错了对象，不是"想要某个 winner"。
+  const shopSetbackM = (() => {
+    if (!shop || !ctx.primaryFrontage) return 99;
+    const [ea, eb] = ctx.primaryFrontage.parcelEdge;
+    const dx = eb.x - ea.x;
+    const dy = eb.y - ea.y;
+    const L2 = dx * dx + dy * dy;
+    let best = Infinity;
+    for (const p of shop.footprint.outer) {
+      const t = L2 > 0 ? clamp01(((p.x - ea.x) * dx + (p.y - ea.y) * dy) / L2) : 0;
+      const qx = ea.x + dx * t;
+      const qy = ea.y + dy * t;
+      best = Math.min(best, Math.hypot(p.x - qx, p.y - qy));
+    }
+    return best * 7;
+  })();
+  // 贴街度：<= 6 m 满分（5 m 退线 + 1 m 余量），到 20 m（一个停车进深）为 0
+  const streetFront = clamp01(1 - (shopSetbackM - 6) / 14);
+  const frontageVisible = clamp01(0.55 * saturate(frontShare, 0.35, 0.65, 1.0) + 0.45 * streetFront);
   const frontageQuality = clamp01(0.6 * frontageVisible + 0.4 * (ctx.primaryFrontage?.score ?? 0));
 
   // ② 顾客动线：从停车区/街到店门有没有被车流切断

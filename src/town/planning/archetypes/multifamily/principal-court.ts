@@ -264,7 +264,17 @@ export function buildPrincipalCourtCandidate(ctx: SiteContext): SitePlanCandidat
 
   // 前场 / 入口轴：只认"不是碎缝"的。斜边地上这块可能只有几平米 ——
   // 硬塞进地面表会被"碎片"惩罚算成切碎（544:-100 就是这么输掉 0.6 分的）。
-  const foreS = cut(sFrontLo, sFrontHi, 0, bd);
+  // 沿街绿化带：最外面 3 m 归绿化，前场与停车都退到它后面。
+  //
+  // 这条带子是**街道界面**：早先临街带是"前场 + 地面停车"，停车直接对街，
+  // 街道两侧一半是车屁股（实测 principal 形态的街墙率 41%、
+  // 临街采样点里 46% 前面完全没有建筑）。3 m 的绿篱带既是最小可行的界面，
+  // 也不吃掉停车（只在进深上让 3 m）。
+  const vergeD = U(3);
+  const vergeS = cut(0, Lu, 0, vergeD);
+  add('landscape', vergeS, '沿街绿化带');
+
+  const foreS = cut(sFrontLo, sFrontHi, vergeD, bd);
   add('entrance_forecourt', foreS && shortestSideM(foreS) >= 3 ? foreS : null, '入口前场（临街）');
   // ---- 院内步行骨架（R8）
   //
@@ -308,7 +318,7 @@ export function buildPrincipalCourtCandidate(ctx: SiteContext): SitePlanCandidat
   notes.push(`院内步道 ${walks.length} 条，草坪 ${lawn.length} 块`);
 
   // 临街带里前场之外的部分：靠入口一侧做地面停车，另一侧做绿化
-  const parkSide = cut(sFrontHi, Lu, 0, bd);
+  const parkSide = cut(sFrontHi, Lu, vergeD, bd);
   let park = parkSide
     ? (() => {
         const rest = surfaceSubtract([parkSide], courtParts);
