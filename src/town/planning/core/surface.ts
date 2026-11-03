@@ -289,6 +289,64 @@ export function surfaceIntersect(a: PlanSurface[], b: PlanSurface[]): PlanSurfac
   }
 }
 
+/**
+ * 变距内缩：每条边按各自的距离向内推。
+ *
+ * 为什么不能统一 offset：城市路网里这条街 10 m 红线、那条 28 m，
+ * 地块必须沿每条边让出**各自**的红线宽。统一 offset 只能取一个值 ——
+ * 要么压路（取小了），要么把地块啃掉一大块（取大了）。
+ *
+ * 做法是标准的半平面裁剪：对每条边求出"向内距离 d 的平行线"，
+ * 把多边形裁到这条线的内侧，逐边做完就是变距内缩。
+ * 环必须是 CCW（左手法线朝内），否则先翻转。
+ */
+export function insetPerEdge(ring: ReadonlyArray<{ x: number; y: number }>, dists: number[]): Pt[] {
+  const n = ring.length;
+  // 输入只要求 {x,y}（adapters 那层的 patch 顶点是轻量对象），
+  // 内部统一转成 core/geom 的 Pt —— 半平面裁剪要构造新顶点。
+  const src: Pt[] = ring.map((p) => new Pt(p.x, p.y));
+  if (n < 3) return src;
+  // 统一成 CCW —— 边和法线都必须基于同一套顶点顺序。
+  // （原环如果是 CW，先 reverse；否则内法线会朝外，把多边形裁没。）
+  const ccw = ringArea(src) < 0 ? src.slice().reverse() : src.slice();
+  // dists 是按原环的下标给的；翻转后下标要跟着翻
+  const flipped = ringArea(src) < 0;
+  const dOf = (i: number) => dists[flipped ? n - 1 - i : i] ?? 0;
+
+  let poly = ccw.slice();
+  for (let i = 0; i < n && poly.length >= 3; i++) {
+    const a = ccw[i];
+    const b = ccw[(i + 1) % n];
+    const d = dOf(i);
+    if (d <= 1e-9) continue;
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 1e-9) continue;
+    // CCW 环的左法线朝内
+    const nx = -(b.y - a.y) / len;
+    const ny = (b.x - a.x) / len;
+    poly = clipHalfPlane(poly, a, nx, ny, d);
+  }
+  return poly;
+}
+
+/** 保留 dot(p − a, n) >= d 的部分（Sutherland–Hodgman 单侧裁剪） */
+function clipHalfPlane(poly: Pt[], a: Pt, nx: number, ny: number, d: number): Pt[] {
+  const out: Pt[] = [];
+  const side = (p: Pt) => (p.x - a.x) * nx + (p.y - a.y) * ny - d;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    const sp = side(p);
+    const sq = side(q);
+    if (sp >= -1e-12) out.push(p);
+    if ((sp > 1e-12 && sq < -1e-12) || (sp < -1e-12 && sq > 1e-12)) {
+      const t = sp / (sp - sq);
+      out.push(new Pt(p.x + (q.x - p.x) * t, p.y + (q.y - p.y) * t));
+    }
+  }
+  return out;
+}
+
 /** 外扩（正数）/ 内缩（负数）。洞的方向相反：内缩时洞会变大。 */
 export function surfaceOffset(s: PlanSurface, d: number): PlanSurface[] {
   if (Math.abs(d) < 1e-9) return [s];
