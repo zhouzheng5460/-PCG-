@@ -188,6 +188,10 @@ ok('Planner 确实接管了地块', bundle.stats.covered > 0, `${bundle.stats.co
     const park = feats.surfaces.filter((s) => s.name.includes('parking') || s.name.includes('parkreq')).map((s) => s.ring);
     for (const p of feats.props) {
       if (p.kind !== 'tree' && p.kind !== 'treeSmall' && p.kind !== 'conifer') continue;
+      // 树岛（`_island_`）是**刻意**种在停车场里的：真实停车场就是
+      // 每 4~6 个车位一组、组间有树岛。这条断言管的是"绿地里的树
+      // 不该飘到车位上"，树岛不算违规。
+      if (p.name.includes('_island_')) continue;
       if (bld.some((r) => pointInRing(p.at, r))) treeOnBuilding++;
       if (park.some((r) => pointInRing(p.at, r))) treeOnParking++;
     }

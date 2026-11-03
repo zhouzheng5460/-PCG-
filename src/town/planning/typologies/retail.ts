@@ -104,7 +104,12 @@ export function retailDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layou
   // 只取一块会让停车面积凭空减半，R05 直接判"停车区过小"。
   const parkParts = c.ground.filter((g) => g.program === 'parking');
   const parking = parkParts[0];
-  const parkArea = parkParts.reduce((a, g) => a + g.area, 0);
+  // 停车楼：地面停车被立体化之后，地面面积会少掉 2/3，但**车位没少**。
+  // 按"等效地面面积"折算（一栋 3 层停车楼 = 3 倍地面面积，其中 1 层仍在地面），
+  // 否则 parkingQuality 会因为"立体化"而掉分 —— 那等于惩罚正确做法。
+  const garage = c.buildings.find((b) => (b.notes ?? []).some((n) => n.includes('停车楼')));
+  const garageEquiv = garage ? surfaceArea(garage.footprint) * 2 : 0;
+  const parkArea = parkParts.reduce((a, g) => a + g.area, 0) + garageEquiv;
   const fore = c.ground.find((g) => g.program === 'entrance_forecourt');
   const pedRegion = c.ground.find((g) => g.program === 'pedestrian');
   const service = c.ground.find((g) => g.program === 'service');
@@ -237,7 +242,12 @@ export function parkingOverlapsShop(c: SitePlanCandidate): number {
   // 只取一块会让停车面积凭空减半，R05 直接判"停车区过小"。
   const parkParts = c.ground.filter((g) => g.program === 'parking');
   const parking = parkParts[0];
-  const parkArea = parkParts.reduce((a, g) => a + g.area, 0);
+  // 停车楼：地面停车被立体化之后，地面面积会少掉 2/3，但**车位没少**。
+  // 按"等效地面面积"折算（一栋 3 层停车楼 = 3 倍地面面积，其中 1 层仍在地面），
+  // 否则 parkingQuality 会因为"立体化"而掉分 —— 那等于惩罚正确做法。
+  const garage = c.buildings.find((b) => (b.notes ?? []).some((n) => n.includes('停车楼')));
+  const garageEquiv = garage ? surfaceArea(garage.footprint) * 2 : 0;
+  const parkArea = parkParts.reduce((a, g) => a + g.area, 0) + garageEquiv;
   if (!shop || !parking) return 0;
   return surfaceIntersect([parking.surface], [shop.footprint]).reduce((a, q) => a + surfaceArea(q), 0);
 }

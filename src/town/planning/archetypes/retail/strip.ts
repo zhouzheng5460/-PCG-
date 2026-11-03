@@ -14,7 +14,7 @@
 // 边界同前：只吃 SiteContext、只吐 SitePlanCandidate。
 
 import { Pt } from '../../../../core/geom';
-import { surface, surfaceArea, surfaceIntersect, surfaceSubtract, insideSurface, type PlanSurface } from '../../core/surface';
+import { surface, surfaceArea, surfaceIntersect, surfaceSubtract, insideSurface, bboxOf, type PlanSurface } from '../../core/surface';
 import type { SiteContext } from '../../core/types';
 import type { PlannedAccess, PlannedBuilding, PlannedRegion, ParkingRequest, SitePlanCandidate } from '../../core/candidate';
 import { retailDiagnostics, SHOP_DEPTH_M } from '../../typologies/retail';
@@ -158,13 +158,44 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   const shopU1 = variant.parking === 'side' ? u0 + W * 0.62 : u1;
   const shop = cut(shopU0, shopU1, shopV0, Math.min(shopV1, v1));
   if (!shop) return null;
-  buildings.push({
-    role: 'podium',
-    footprint: shop,
-    height: U(7), // 单层大盒商业（≈7 m），不做层数
-    frontSide: new Pt(vDirOf(f).x, vDirOf(f).y),
-    notes: [`店铺进深 ${SHOP_DEPTH_M} m，沿街 ${((shopU1 - shopU0) * 7).toFixed(0)} m`],
-  });
+
+  // ---- 沿街店面：长条店铺切成 2~5 间 ----
+  //
+  // 原来一个地块只有**一个 7 m 高的大盒子**，一条商业街看过去全是同尺寸、
+  // 同高度的盒子 —— 用户说的"相似的建筑体块"就是这个。
+  //
+  // 真实商业街是 8~12 m 面宽一间、高度略有参差（转角 / 端头两层，
+  // 中间单层）。这里沿街切成 n 间，偶数号抬到 9 m，形成沿街的节奏。
+  //
+  // 只在**后侧停车**变体上切：停车临街时店面本来就退在后面，
+  // 切开只会让"退后的那排小店"更碎，没有意义。
+  const shopLenM = (shopU1 - shopU0) * 7;
+  const shopRows = variant.parking === 'rear' && shopLenM >= 34 ? Math.min(5, Math.max(2, Math.round(shopLenM / 10))) : 1;
+  if (shopRows > 1) {
+    for (let i = 0; i < shopRows; i++) {
+      const a = shopU0 + ((shopU1 - shopU0) * i) / shopRows;
+      const b = shopU0 + ((shopU1 - shopU0) * (i + 1)) / shopRows;
+      const part = cut(a, b, shopV0, Math.min(shopV1, v1));
+      if (!part) continue;
+      // 端头两间抬到 9 m（两层），中间单层 7 m —— 沿街的高低节奏
+      const twoStory = i === 0 || i === shopRows - 1;
+      buildings.push({
+        role: 'podium',
+        footprint: part,
+        height: twoStory ? U(9) : U(7),
+        frontSide: new Pt(vDirOf(f).x, vDirOf(f).y),
+        notes: [`沿街店面 ${i + 1}/${shopRows}（面宽 ${(shopLenM / shopRows).toFixed(0)} m，${twoStory ? '两层端头' : '单层'}）`],
+      });
+    }
+  } else {
+    buildings.push({
+      role: 'podium',
+      footprint: shop,
+      height: U(7), // 单层大盒商业（≈7 m），不做层数
+      frontSide: new Pt(vDirOf(f).x, vDirOf(f).y),
+      notes: [`店铺进深 ${SHOP_DEPTH_M} m，沿街 ${shopLenM.toFixed(0)} m`],
+    });
+  }
 
   if (variant.lShop) {
     // L 形：侧向再伸一条，挡住侧街视线，形成半围合前场
@@ -246,6 +277,46 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   }
   add('entrance_forecourt', fore, '店前人行带');
   add('pedestrian', walk, '停车 → 店门步行带');
+
+  // ---- 停车楼：大地块把停车需求立体化 ----
+  //
+  // 一个 10000 m² 的地块上，地面停车能占 4000 m² —— 那就是用户说的
+  // "大片停车场"。真实商业区在这个时候会做**停车楼**：占 1/3 的地，
+  // 3 层装下同样多的车位。
+  //
+  // 只在大地块触发（>= 9000 m² 且地面停车 >= 1800 m²），小地块仍然地面停车
+  //（停车楼本身的出入口、坡道在小地块上不划算）。
+  //
+  // 停车楼落成 `office` role（`BuildingRole` 只有 7 种，停车楼在 3D 里
+  // 就是个多层方盒子，和 office 同形）。诊断靠 note 里的标记认它，
+  // 按"等效地面停车面积"折算，所以立体化不会让 parkingQuality 掉。
+  let garage: PlanSurface | null = null;
+  const gLotM2 = surfaceArea(ctx.parcel) * 49;
+  const gParkM2 = keptPark.reduce((a, p) => a + surfaceArea(p) * 49, 0);
+  if (gLotM2 >= 9000 && gParkM2 >= 1800 && keptPark.length > 0) {
+    const biggest = keptPark.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
+    const bb = bboxOf(biggest.outer);
+    const side = Math.sqrt(surfaceArea(biggest) / 3);
+    const rect = surface([
+      new Pt(bb.minX, bb.minY),
+      new Pt(bb.minX + side, bb.minY),
+      new Pt(bb.minX + side, bb.minY + side),
+      new Pt(bb.minX, bb.minY + side),
+    ]);
+    const parts = surfaceIntersect([rect], [biggest]);
+    if (parts.length > 0) {
+      const g = parts.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
+      if (surfaceArea(g) > U(10) * U(10)) garage = g;
+    }
+  }
+  if (garage) {
+    buildings.push({
+      role: 'office',
+      footprint: garage,
+      height: U(9), // 3 层
+      notes: ['停车楼（3 层，替代地面停车）'],
+    });
+  }
 
   add('service', svc, '卸货/后勤');
   add('landscape', greenL);
