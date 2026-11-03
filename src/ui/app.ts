@@ -1809,6 +1809,16 @@ function boot(): void {
     }
   });
 
+  // ?focusxy=<x>,<y>&zoom=<n>：按世界坐标聚焦（看路口 / 任意位置）
+  {
+    const fx = q.get('focusxy');
+    if (fx) {
+      const [x, y] = fx.split(',').map(Number);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        view2d.focusOn(x, y, Number(q.get('zoom') ?? 40));
+      }
+    }
+  }
   // ?focus=<patchKey>：把镜头拉到那块地（R8 前端验收要看地块尺度）
   {
     const fk = q.get('focus');

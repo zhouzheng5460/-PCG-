@@ -193,21 +193,50 @@ export function resolveFrontages(parcel: PlanSurface, edges: SiteRoadEdge[], not
     return { all: [], orientation: dominantAngle(ring) };
   }
 
-  // 同一条道路边的多段地块边合并成一条临街面
-  const byEdge = new Map<string, { edge: SiteRoadEdge; len: number; dist: number; segs: [Pt, Pt][] }>();
+  // 先把"同一条街的连续段"合并成一条临街面。
+  //
+  // 为什么必须合并：路网是 Voronoi 边，一条街在数据里是 **5~8 条并列的
+  // RoadEdge**（每条对应一个相邻街区的一条边）。原先按 edge.key 分组再逐条
+  // 打分取 top2，primary 和 secondary 常常落在**同一条街的两段**上 ——
+  // 真正的转角面被挤掉，于是下游以为这块地"只临一条街"。
+  // 实测：按 primary/secondary 判"真转角"是 0 块，按地块形状判是 97/99 块。
+  //
+  // 合并规则：相邻（在 ring 上连续）且方向差 < 25° 就算同一条街。
+  // 25° 能吃掉 Voronoi 折线的缓弯，但不会把真转角（通常 60°~120°）并掉。
+  const dirOf = (e: SiteRoadEdge) => Math.atan2(e.b.y - e.a.y, e.b.x - e.a.x);
+  const sameStreet = (x: SiteRoadEdge, y: SiteRoadEdge) => {
+    let d = Math.abs(dirOf(x) - dirOf(y)) % Math.PI;
+    if (d > Math.PI / 2) d = Math.PI - d;
+    return d < (25 * Math.PI) / 180;
+  };
+
+  interface Run {
+    edge: SiteRoadEdge;
+    len: number;
+    dist: number;
+    segs: [Pt, Pt][];
+  }
+  const runs: Run[] = [];
   for (const m of matched) {
-    const cur = byEdge.get(m.edge.key);
-    if (cur) {
-      cur.len += m.len;
-      cur.dist = Math.min(cur.dist, m.dist);
-      cur.segs.push([m.a, m.b]);
+    const prev = runs[runs.length - 1];
+    if (prev && (prev.edge.key === m.edge.key || sameStreet(prev.edge, m.edge))) {
+      prev.len += m.len;
+      prev.dist = Math.min(prev.dist, m.dist);
+      prev.segs.push([m.a, m.b]);
     } else {
-      byEdge.set(m.edge.key, { edge: m.edge, len: m.len, dist: m.dist, segs: [[m.a, m.b]] });
+      runs.push({ edge: m.edge, len: m.len, dist: m.dist, segs: [[m.a, m.b]] });
     }
+  }
+  // ring 是闭合的：首尾同街也要并（否则一条环绕地块的街会被拆成两半）
+  while (runs.length > 1 && sameStreet(runs[0].edge, runs[runs.length - 1].edge)) {
+    const last = runs.pop()!;
+    runs[0].len += last.len;
+    runs[0].dist = Math.min(runs[0].dist, last.dist);
+    runs[0].segs.push(...last.segs);
   }
 
   const all: Frontage[] = [];
-  for (const { edge, len, dist, segs } of byEdge.values()) {
+  for (const { edge, len, dist, segs } of runs) {
     const roadClass = edge.cls === 'arterial' ? 1 : edge.cls === 'collector' ? 0.72 : 0.46;
     const sharedLength = Math.min(1, len / 2.4); // 2.4 单位 ≈ 17 m 就算"占满一条边"
     const visibility = Math.max(0, 1 - dist / 3);
