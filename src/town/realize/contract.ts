@@ -107,7 +107,13 @@ export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
   amenity: 'paver',
   entrance_forecourt: 'stonePave',
   pedestrian: 'paver',
-  parking: 'asphaltLot',
+  // 车位用**浅灰**、通道用深灰 —— 这是专业总图的读法：
+  // 车位格子浅（大面积硬地，视觉上往后退），车行道深（图的"骨"）。
+  // 早先车位用 asphaltLot(0.268)、通道用 asphalt(0.243)，差 0.025，
+  // 俯视图上完全分不开，整个停车场读成一片灰。
+  parking: 'concrete',
+  parking_aisle: 'asphalt',
+  parking_island: 'grass',
   landscape: 'grassDark',
   service: 'asphalt',
   // 酒店
@@ -130,6 +136,8 @@ export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
 export const GROUND_LIFT: Partial<Record<GroundProgram, number>> = {
   truck_court: 0.0004,
   parking: 0.0004,
+  parking_aisle: 0.0004,
+  parking_island: 0.0008,
   employee_parking: 0.0004,
   dropoff: 0.0006,
   driveway: 0.0008,

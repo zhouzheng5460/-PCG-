@@ -118,7 +118,7 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
 
   // 沿 u 方向按车位宽切列，**每 6 个车位插一条 1.5 m 树池**
   const ISLAND_EVERY = 6;
-  const ISLAND_W = 1.5 / 7; // 1.5 m → 世界单位（本文件没有全局 U，直接算）
+  const ISLAND_W = 2.4 / 7; // 2.4 m → 世界单位（树池含两侧路缘，1.5 太窄读不出来）
   const cols: number[] = [];
   /** 树岛在 u 方向的位置（每个位置跨越整排车位） */
   const islandUs: number[] = [];

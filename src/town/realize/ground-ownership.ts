@@ -67,6 +67,9 @@ export const GROUND_PRIORITY: Record<GroundProgram, number> = {
   entrance_forecourt: 88,
   loading_apron: 82,
   truck_court: 78,
+  // 树岛和通道压在车位面上：树岛最高（树不能被车位吃掉），通道其次
+  parking_island: 76,
+  parking_aisle: 74,
   parking: 72,
   employee_parking: 72,
   arrival_court: 62,

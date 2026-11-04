@@ -75,8 +75,13 @@ function checkParity(label: string, c: SitePlanCandidate): void {
   const plannedUnion = surfaceUnion(c.ground.map((g) => g.surface))
     .reduce((s, q) => s + surfaceArea(q), 0);
   // 道路面之间（段矩形 + 转角方垫）本来就重叠，那是设计使然，不计入"地面独占性"
+  // 细节层不参与独占性统计：
+  //   `_road_`     路段矩形 + 转角方垫本来就互相重叠（设计使然）
+  //   `_parkreq_`  停车请求面（规划层，不是实现面）
+  //   `_pk_`       停车场的通道面 / 树岛面 —— 它们**刻意**铺在车位底面之上
+  //                （专业总图的三层材质），不是"两个功能面互相压"
   const realizedSurfaces = r.surfaces.filter(
-    (s) => !s.name.includes('_parkreq_') && !s.name.includes('_road_')
+    (s) => !s.name.includes('_parkreq_') && !s.name.includes('_road_') && !s.name.includes('_pk_')
   );
   // 覆盖口径要算上道路：路是从 ground 里切出来的，切走的那块仍然"被铺了"（铺成路面）
   const realizedUnion = surfaceUnion(

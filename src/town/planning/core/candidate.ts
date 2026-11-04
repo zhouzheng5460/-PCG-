@@ -45,6 +45,16 @@ export type GroundProgram =
   | 'community_green'
   | 'pedestrian'
   | 'parking'
+  /**
+   * 停车场里的**车行通道**（与车位面分开）。
+   *
+   * 专业总图上"车位格子"和"车行道"是两种材质：车位是浅一点的沥青、通道更深。
+   * 之前为了避开重叠把它们合并成一个 `parking`，结果是整片一片灰 ——
+   * 这正是"停车场看起来不像设计过"的直接原因。
+   */
+  | 'parking_aisle'
+  /** 停车场里的**树岛**（车位组之间的绿带，不穿通道） */
+  | 'parking_island'
   | 'landscape'
   | 'service'
   // 兜底

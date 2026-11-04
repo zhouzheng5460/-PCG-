@@ -117,6 +117,34 @@ export function realizeParking(
       });
     }
 
+    // ④b 通道面 + 树岛面：专业总图上"车位 / 通道 / 树岛"是三层不同材质。
+    //
+    // 之前通道"不单独成面"（为了避开重叠统计），整片 parking 一片灰。
+    // 现在把它们作为**细节层**输出（和 road / parkreq 同一个惯例），
+    // 铺在车位底色之上、用 y 偏移分层：
+    //   parking     asphaltLot（浅）
+    //   parking_aisle asphalt（深一档）
+    //   parking_island grass（绿）
+    // 细节层不参与"地面独占性"统计（测试里按名字前缀排除）。
+    for (const [k, a] of layout.aisles.entries()) {
+      part.surfaces.push({
+        name: `${c.id}_pk_aisle_${i}_${k}`,
+        group: ctx.group,
+        ring: a,
+        mat: 'asphalt',
+        y: base + 0.0018,
+      });
+    }
+    for (const [k, isl] of layout.islands.entries()) {
+      part.surfaces.push({
+        name: `${c.id}_pk_island_${i}_${k}`,
+        group: ctx.group,
+        ring: isl,
+        mat: 'grass',
+        y: base + 0.0022,
+      });
+    }
+
     // ⑤ 树岛：**按车位排的真实位置**种，不再随机撒。
     //
     // `layout.islands` 是每 6 个车位之间那条 1.5 m 的树池带（只占车位排、
