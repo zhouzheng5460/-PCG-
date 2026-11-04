@@ -105,10 +105,26 @@ export function generateMultiFamilyCourtyardCandidates(ctx: SiteContext): SitePl
   const D = v1 - v0;
   if (W < U(COURT_MIN_W_M) || D < U(COURT_MIN_D_M)) return [];
 
+  // ---- 多组团：地块够大时排 N×M 个围合院 ----
+  //
+  // 一个围合组团需要院子（≥18×16 m）+ 四边 bar（各深 14~18 m），
+  // 合计至少 58~70 m 见方。街区放大到 122 m（退线后约 92 m）之后，
+  // 正好能排 1~2 个 —— 原来只排中间一个，四周全是空地，
+  // 这就是"覆盖率 P50 只有 18~21%、大片绿地"的直接原因。
+  //
+  // 排多个组团时，组团之间留 7 m（内部人行道 + 绿化），不共用 bar。
+  const GROUP_MIN = U(58);
+  const GROUP_GAP = U(7);
+  const nx = Math.max(1, Math.floor((W + GROUP_GAP) / (GROUP_MIN + GROUP_GAP)));
+  const ny = Math.max(1, Math.floor((D + GROUP_GAP) / (GROUP_MIN + GROUP_GAP)));
+
   const out: SitePlanCandidate[] = [];
   const genNotes: string[] = [];
   for (const v of VARIANTS) {
-    const c = buildVariant(ctx, { at, u0, u1, v0, v1, W, D, variant: v });
+    const c =
+      nx * ny > 1
+        ? buildMultiGroup(ctx, { at, u0, v0, W, D, nx, ny, variant: v })
+        : buildVariant(ctx, { at, u0, u1, v0, v1, W, D, variant: v });
     if (c) out.push(c);
   }
 
@@ -147,6 +163,63 @@ interface Frame {
   W: number;
   D: number;
   variant: MfVariant;
+}
+
+/**
+ * 多组团：把地块按 N×M 切成若干围合组团，各自跑一遍 `buildVariant`，再合并。
+ *
+ * **不改 buildVariant 一行**：每个组团都是一个完整的、有自己院子和四边 bar 的
+ * 小街区，校验（围合不足 / 纸片楼 / 院子太小）也各自跑。
+ *
+ * 合并后：
+ *   · buildings / ground / parkingRequests 累加；
+ *   · **入口只取第一组**（主临街那一组）—— 其余组团从内部通道进，
+ *     不能每个院子都开一个临街车行口；
+ *   · 诊断与评分由外层统一重算（合并后院子变成多个，围合度要按新的算）。
+ */
+function buildMultiGroup(
+  ctx: SiteContext,
+  f: { at: (lu: number, lv: number) => Pt; u0: number; v0: number; W: number; D: number; nx: number; ny: number; variant: MfVariant }
+): SitePlanCandidate | null {
+  const { at, u0, v0, W, D, nx, ny, variant } = f;
+  const GROUP_GAP = U(7);
+  const cw = (W - (nx - 1) * GROUP_GAP) / nx;
+  const cd = (D - (ny - 1) * GROUP_GAP) / ny;
+  if (cw < U(50) || cd < U(50)) return null;
+
+  const pieces: SitePlanCandidate[] = [];
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const su0 = u0 + i * (cw + GROUP_GAP);
+      const sv0 = v0 + j * (cd + GROUP_GAP);
+      const c = buildVariant(ctx, {
+        at,
+        u0: su0,
+        u1: su0 + cw,
+        v0: sv0,
+        v1: sv0 + cd,
+        W: cw,
+        D: cd,
+        variant,
+      });
+      if (c) pieces.push(c);
+    }
+  }
+  // 只成立一组就退回单组团（别给一个院子的方案套上 "2×2" 的名字）
+  if (pieces.length < 2) return pieces[0] ?? null;
+
+  const first = pieces[0];
+  return {
+    ...first,
+    id: `${first.id}-${nx}x${ny}`,
+    notes: [`${nx}×${ny} 组团（${pieces.length}/${nx * ny} 组成立）`, ...first.notes],
+    buildings: pieces.flatMap((p) => p.buildings),
+    ground: pieces.flatMap((p) => p.ground),
+    parkingRequests: pieces.flatMap((p) => p.parkingRequests),
+    // 入口只保留第一组（主临街），其余从内部通道进
+    access: first.access,
+    circulation: pieces.flatMap((p) => p.circulation),
+  };
 }
 
 function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
