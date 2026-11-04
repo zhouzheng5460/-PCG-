@@ -24,6 +24,39 @@ const CELL = CELL_M / 7; // 世界单位
 
 export type Traffic = 'pedestrian' | 'vehicle' | 'service';
 
+/** 吸附失败/成功的完整记录 —— 失败必须能解释，不能静默丢掉一条必要连接 */
+export interface SnapInfo {
+  /** 吸附前坐标 */
+  from: Pt;
+  /** 吸附后坐标；null = 失败 */
+  to: Pt | null;
+  /** 吸附位移（m） */
+  distM: number;
+  /** 失败原因 */
+  reason?: 'blocked-at-point' | 'no-free-cell' | 'outside-grid';
+  /** 所在连通分量（-1 = 不可走）；吸附后才知道 */
+  component?: number;
+}
+
+/**
+ * Portal：入口 + **接入方向**。
+ *
+ * 原来只存一个点，A* 就从这个点开始 —— 但那个点常常正好在建筑的膨胀区里，
+ * 于是要么吸到很远的地方，要么干脆无解。Portal 额外带一个 `dir`（合法的离开方向），
+ * 沿途推出膨胀区之后才作为 A* 的起点。
+ */
+export interface Portal {
+  id: string;
+  kind: 'street' | 'door' | 'service-door' | 'parking';
+  /** 语义位置（锚点） */
+  at: Pt;
+  /** 合法接入方向（从建筑/场地指向可通行侧） */
+  dir: Pt;
+  /** 净空要求（m） */
+  clearM: number;
+  snap: SnapInfo;
+}
+
 export interface CirNode {
   id: string;
   at: Pt;
@@ -99,6 +132,31 @@ function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): 
       }
     }
   }
+  // **停车区本身是可通行的**（车就停在上面）。
+  //
+  // 不做这一步时，建筑按 2.2 m 膨胀后会把内部停车场整圈围死 —— 实测 MF 的停车区
+  // 落在一个只有 3 个单元格大小的连通分量里（街道是 19 号），A* 永远无解。
+  // 这不是 Portal 的问题，是"把已存在的地面当成障碍"的顺序错误。
+  for (const pr of c.parkingRequests) {
+    const r = pr.region.outer;
+    let px0 = Infinity, py0 = Infinity, px1 = -Infinity, py1 = -Infinity;
+    for (const q of r) {
+      px0 = Math.min(px0, q.x); py0 = Math.min(py0, q.y);
+      px1 = Math.max(px1, q.x); py1 = Math.max(py1, q.y);
+    }
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < ny; j++) {
+        const x = x0 + (i + 0.5) * CELL;
+        const y = y0 + (j + 0.5) * CELL;
+        if (x < px0 || x > px1 || y < py0 || y > py1) continue;
+        if (!pointIn(x, y, r)) continue;
+        // 只解除"因膨胀而被封"的格子；真在建筑内部的仍然不可走
+        const inBld = c.buildings.some((b) => pointIn(x, y, b.footprint.outer) && distToRing(x, y, b.footprint.outer) > 0.01);
+        if (!inBld) blocked[j * nx + i] = 0;
+      }
+    }
+  }
+
   return { x0, y0, nx, ny, blocked, inset: ctx.buildableArea };
 }
 
@@ -109,22 +167,82 @@ function cellCenter(g: Grid, i: number, j: number): Pt {
   return new Pt(g.x0 + (i + 0.5) * CELL, g.y0 + (j + 0.5) * CELL);
 }
 
-/** 把起点吸到最近的可走格（入口常常正好贴着建筑/边界） */
-function snap(g: Grid, p: Pt, maxR = 24): [number, number] | null {
-  const [ci, cj] = toCell(g, p);
-  for (let r = 0; r <= maxR; r++) {
+/**
+ * 把点吸到最近的可走格。**失败要返回原因**（R1.1 第一条要求）。
+ *
+ * 死掉的旧版本只返回 null，于是 9 条 OD 里有 6 条"无解"，但看不出是
+ * 起点在膨胀区里、还是整个栅格都没有空格、还是压根在网格外。
+ */
+function snapWithReason(g: Grid, p: Pt, maxR = 40, dir?: Pt): SnapInfo {
+  // **街区出口在 parcel 边界上，而栅格只覆盖 buildable** —— 直接取格一定是 outside-grid。
+  // 所以先沿 Portal 的合法接入方向往里推，推到栅格范围内再吸附。
+  let q = p;
+  if (dir) {
+    for (let d = 0; d <= 24; d += 0.5) {
+      const t = new Pt(p.x + (dir.x * d) / 7, p.y + (dir.y * d) / 7);
+      const [ti, tj] = toCell(g, t);
+      if (ti >= 0 && tj >= 0 && ti < g.nx && tj < g.ny) { q = t; break; }
+    }
+  }
+  const [ci, cj] = toCell(g, q);
+  if (ci < 0 || cj < 0 || ci >= g.nx || cj >= g.ny) {
+    return { from: p, to: null, distM: 0, reason: 'outside-grid' };
+  }
+  const atIdx = cj * g.nx + ci;
+  if (!g.blocked[atIdx]) return { from: p, to: cellCenter(g, ci, cj), distM: +dist(p, cellCenter(g, ci, cj)).toFixed(2) * 7 };
+  const blockedAtPoint = true;
+  for (let r = 1; r <= maxR; r++) {
     for (let dx = -r; dx <= r; dx++) {
       for (let dy = -r; dy <= r; dy++) {
         if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
         const i = ci + dx;
         const j = cj + dy;
         if (i < 0 || j < 0 || i >= g.nx || j >= g.ny) continue;
-        if (!g.blocked[j * g.nx + i]) return [i, j];
+        if (g.blocked[j * g.nx + i]) continue;
+        const c2 = cellCenter(g, i, j);
+        return { from: p, to: c2, distM: +dist(p, c2).toFixed(2) * 7, reason: 'blocked-at-point' };
       }
     }
   }
-  return null;
+  return { from: p, to: null, distM: 0, reason: 'no-free-cell' };
 }
+
+/** 连通分量：一次 BFS 给每个可走格编号。用来解释"为什么这条 OD 无解"。 */
+function components(g: Grid): Int32Array {
+  const { nx, ny } = g;
+  const comp = new Int32Array(nx * ny).fill(-1);
+  let id = 0;
+  const q = new Int32Array(nx * ny);
+  for (let start = 0; start < comp.length; start++) {
+    if (g.blocked[start] || comp[start] !== -1) continue;
+    let head = 0;
+    let tail = 0;
+    q[tail++] = start;
+    comp[start] = id;
+    while (head < tail) {
+      const cur = q[head++];
+      const ci = cur % nx;
+      const cj = (cur - ci) / nx;
+      for (let k = 0; k < 8; k++) {
+        const ni = ci + DX8[k];
+        const nj = cj + DY8[k];
+        if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
+        const idx = nj * nx + ni;
+        if (g.blocked[idx] || comp[idx] !== -1) continue;
+        if (DX8[k] && DY8[k]) {
+          if (g.blocked[cj * nx + ni] || g.blocked[nj * nx + ci]) continue;
+        }
+        comp[idx] = id;
+        q[tail++] = idx;
+      }
+    }
+    id++;
+  }
+  return comp;
+}
+
+const DX8 = [1, 1, 0, -1, -1, -1, 0, 1];
+const DY8 = [0, 1, 1, 1, 0, -1, -1, -1];
 
 /** A*（8 邻域）。`penalty` 让已用格子变贵，用来生成"不同的备选" */
 function astar(g: Grid, s: [number, number], t: [number, number], penalty?: Float32Array): Pt[] | null {
@@ -249,6 +367,11 @@ class MinHeap {
 const dist = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
 const lenM = (pts: Pt[]) => pts.slice(1).reduce((s, p, i) => s + dist(pts[i], p), 0) * 7;
 
+function idxOf(g: Grid, p: Pt): number {
+  const [i, j] = toCell(g, p);
+  return j * g.nx + i;
+}
+
 function pointIn(x: number, y: number, ring: ReadonlyArray<{ x: number; y: number }>): boolean {
   let hit = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -298,6 +421,11 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
   const edges: CirEdge[] = [];
 
   // ① 入口（全部来自语义数据，不产几何）
+  /** street portal → 指向地块内部的单位向量（栅格只覆盖 buildable，出口在 parcel 边上） */
+  const nodeDir = new Map<string, Pt>();
+  for (const [i, a] of c.access.entries()) {
+    nodeDir.set(`street_${i}`, new Pt(-a.normal.x, -a.normal.y));
+  }
   for (const [i, a] of c.access.entries()) {
     nodes.push({
       id: `street_${i}`,
@@ -313,10 +441,21 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
   const svc = c.access.find((a) => a.kind === 'service');
   if (svc) nodes.push({ id: 'svc', at: svc.at, kind: 'service-door', block: svc.at, role: 'service' });
   for (const [i, pr] of c.parkingRequests.entries()) {
+    // 停车 Portal **不能取质心**：质心常常被建筑膨胀环完全围死，形成一个只有
+    // 几十个格子的小连通分量（实测 MF 是 3 号分量 vs 街道的 19 号），A* 永远无解。
+    // 改成"从停车区的边界顶点里挑离街道最近的那个" —— 那是车真正开得进来的那一侧。
     const r = pr.region.outer;
-    const cx = r.reduce((s, q) => s + q.x, 0) / r.length;
-    const cy = r.reduce((s, q) => s + q.y, 0) / r.length;
-    nodes.push({ id: `park_${i}`, at: new Pt(cx, cy), kind: 'parking', block: new Pt(cx, cy), role: pr.role });
+    const nearStreet = nodes.filter((n) => n.kind === 'street').map((n) => n.at);
+    let best = r[0];
+    let bd = Infinity;
+    for (let k = 0; k < r.length; k++) {
+      const m = new Pt((r[k].x + r[(k + 1) % r.length].x) / 2, (r[k].y + r[(k + 1) % r.length].y) / 2);
+      for (const st of nearStreet) {
+        const d = dist(m, st);
+        if (d < bd) { bd = d; best = m; }
+      }
+    }
+    nodes.push({ id: `park_${i}`, at: best, kind: 'parking', block: best, role: pr.role });
   }
   if (nodes.length < 2) {
     return { nodes, edges, paths: [], stats: { solved: 0, totalM: 0, mainM: 0, subM: 0, paveM2: 0, sharedRate: 0, connected: true, ms: performance.now() - t0, cells: 0 }, warnings: ['入口不足，跳过'] };
@@ -345,13 +484,40 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
     cells += g.nx * g.ny;
     const use = new Map<number, number>();
     usage.set(tr, use);
+    const comp = components(g);
     for (const od of ods.filter((o) => o.traffic === tr)) {
-      const s = snap(g, od.a.block);
-      const t = snap(g, od.b.block);
-      if (!s || !t) { warnings.push(`${od.a.id}→${od.b.id} 落不进栅格`); continue; }
+      // 街区口的方向 = 指向地块内部（access.normal 是朝外的，取反）
+      const dirA = nodeDir.get(od.a.id) ?? undefined;
+      const sa = snapWithReason(g, od.a.block, 40, dirA);
+      // 停车/门的兜底方向：朝最近街道口
+      const toward = new Pt(od.a.block.x - od.b.block.x, od.a.block.y - od.b.block.y);
+      const tl = Math.hypot(toward.x, toward.y) || 1;
+      // 停车口朝街道推；门朝街推（离开建筑膨胀区）；后勤口同样
+      const dirB = od.b.kind === 'parking' || od.b.kind === 'door' || od.b.kind === 'service-door'
+        ? new Pt(toward.x / tl, toward.y / tl)
+        : undefined;
+      const sb = snapWithReason(g, od.b.block, 40, dirB);
+      sa.component = sa.to ? comp[idxOf(g, sa.to)] : -1;
+      sb.component = sb.to ? comp[idxOf(g, sb.to)] : -1;
+      if (!sa.to || !sb.to) {
+        warnings.push(
+          `${od.a.id}→${od.b.id} 吸附失败（${od.a.id}:${sa.reason ?? 'ok'} / ${od.b.id}:${sb.reason ?? 'ok'}）`
+        );
+        continue;
+      }
+      if (sa.component !== sb.component) {
+        // **这是关键诊断**：两个点都可走，但分属不同连通分量 —— 起点被建筑围住了。
+        warnings.push(
+          `${od.a.id}→${od.b.id} 分量不连通（${sa.component} vs ${sb.component}），` +
+          `${od.a.id} 吸附 ${sa.distM.toFixed(1)}m / ${od.b.id} 吸附 ${sb.distM.toFixed(1)}m`
+        );
+        continue;
+      }
+      const sCell: [number, number] = [Math.floor((sa.to.x - g.x0) / CELL), Math.floor((sa.to.y - g.y0) / CELL)];
+      const tCell: [number, number] = [Math.floor((sb.to.x - g.x0) / CELL), Math.floor((sb.to.y - g.y0) / CELL)];
       // 有界候选：先跑一次；若与已有路径重复 >80%，对已用格子加惩罚再跑一次
-      let best = astar(g, s, t);
-      if (!best) { warnings.push(`${od.a.id}→${od.b.id} 无解`); continue; }
+      let best = astar(g, sCell, tCell);
+      if (!best) { warnings.push(`${od.a.id}→${od.b.id} 同分量但 A* 无解`); continue; }
       const replay = best.filter((p) => {
         const [i, j] = toCell(g, p);
         return use.has(j * g.nx + i);
@@ -359,7 +525,7 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
       if (replay > 0.8) {
         const pen = new Float32Array(g.nx * g.ny);
         for (const k of use.keys()) pen[k] = 6;
-        const alt = astar(g, s, t, pen);
+        const alt = astar(g, sCell, tCell, pen);
         if (alt && alt.length && lenM(alt) < lenM(best) * 1.6) best = alt;
       }
       for (const p of best) {
