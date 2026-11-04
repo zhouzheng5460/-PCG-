@@ -17,6 +17,9 @@ import { generateRetailStripCandidates } from './archetypes/retail/strip';
 import { generateHotelGurbanCandidates } from './archetypes/hotel/gurban';
 import { generateDataCenterSingleHallCandidates } from './archetypes/datacenter/single-hall';
 import { generateSingleFamilyGridCandidates } from './archetypes/singlefamily/grid';
+import { generateGreenCandidates } from './archetypes/green/meadow';
+import { generateParkCandidates } from './archetypes/park/paths';
+import { generateCivicCandidates } from './archetypes/civic/hall';
 import { asRects } from './archetypes/shared/rect';
 import { claimResidual } from './archetypes/shared/claim';
 import { rectsInArea } from './archetypes/shared/rect';
@@ -34,6 +37,9 @@ import { retailDiagnostics } from './typologies/retail';
 import { hotelDiagnostics } from './typologies/hotel';
 import { dcDiagnostics } from './typologies/datacenter';
 import { sfDiagnostics } from './typologies/singlefamily';
+import { greenDiagnostics } from './typologies/green';
+import { parkDiagnostics } from './typologies/park';
+import { civicDiagnostics } from './typologies/civic';
 
 /** typology → 生成器 */
 export const PLANNING_GENERATORS: Partial<Record<SiteTypology, (ctx: SiteContext) => SitePlanCandidate[]>> = {
@@ -43,6 +49,9 @@ export const PLANNING_GENERATORS: Partial<Record<SiteTypology, (ctx: SiteContext
   hotel: generateHotelGurbanCandidates,
   data_center: generateDataCenterSingleHallCandidates,
   single_family: generateSingleFamilyGridCandidates,
+  green: generateGreenCandidates,
+  park: generateParkCandidates,
+  civic: generateCivicCandidates,
 };
 
 /** typology → 诊断函数（矩形化之后要重算分，必须用同一个函数） */
@@ -53,6 +62,9 @@ const DIAGNOSTICS: Partial<Record<SiteTypology, (ctx: SiteContext, c: SitePlanCa
   hotel: hotelDiagnostics,
   data_center: dcDiagnostics,
   single_family: sfDiagnostics,
+  green: greenDiagnostics,
+  park: parkDiagnostics,
+  civic: civicDiagnostics,
 };
 
 /**

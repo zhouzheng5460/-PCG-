@@ -107,6 +107,49 @@ export function weightsFor(typology: SiteTypology): ScoreWeights {
       w.typologyFit = 2.6;
       w.frontageQuality = 1.4;
       break;
+    case 'green':
+      // 绿地看"连续 + 能进去"，建筑相关的项全部归零（否则恒为 0 还占分母）
+      w.typologyFit = 3.0;
+      w.openSpaceQuality = 3.0;
+      w.frontageQuality = 1.8;
+      w.pedestrianClarity = 1.6;
+      w.accessClarity = 1.6;
+      w.fragmentation = 3.2;
+      w.buildingRegularity = 0;
+      w.parkingQuality = 0;
+      w.serviceSeparation = 0;
+      w.spatialCoreQuality = 1.2;
+      w.circulationQuality = 1.2;
+      w.groundUsability = 1.4;
+      break;
+    case 'park':
+      // 公园的命门是"入口 → 骨架 → 节点"，不是覆盖率和停车
+      w.typologyFit = 3.0;
+      w.circulationQuality = 2.8;
+      w.pedestrianClarity = 2.4;
+      w.accessClarity = 2.2;
+      w.openSpaceQuality = 2.6;
+      w.spatialCoreQuality = 1.6;
+      w.frontageQuality = 1.4;
+      w.buildingRegularity = 0;
+      w.parkingQuality = 0;
+      w.serviceSeparation = 0;
+      w.groundUsability = 1.4;
+      w.fragmentation = 1.6;
+      w.deadSpace = 1.8;
+      break;
+    case 'civic':
+      // 公共建筑看"街上 → 广场 → 主入口"这条序列，以及客货分开
+      w.typologyFit = 2.8;
+      w.pedestrianClarity = 3.0;
+      w.accessClarity = 2.8;
+      w.spatialCoreQuality = 2.6;
+      w.serviceSeparation = 2.2;
+      w.accessConflict = 2.4;
+      w.buildingRegularity = 2.0;
+      w.parkingQuality = 0.8;
+      w.openSpaceQuality = 1.4;
+      break;
     case 'data_center':
       w.circulationQuality = 2.4;
       w.typologyFit = 2.4;

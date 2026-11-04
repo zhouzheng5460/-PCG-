@@ -63,6 +63,12 @@ export function typologyOfUse(use: string): SiteTypology {
     case 'commercial':
     case 'cbd':
       return 'retail';
+    case 'green':
+      return 'green';
+    case 'park':
+      return 'park';
+    case 'civic':
+      return 'civic';
     default:
       return 'generic';
   }

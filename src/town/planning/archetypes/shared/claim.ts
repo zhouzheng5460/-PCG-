@@ -38,6 +38,11 @@ const GREEN_PROGRAM: Partial<Record<string, GroundProgram>> = {
   // 用错 program 会被 D01「只用白名单地面」直接判失败
   data_center: 'landscape',
   single_family: 'landscape',
+  // 绿地/公园/公共建筑的残地就是草坪 —— 给 `landscape` 会被 Realizer 再切成网格，
+  // 而这三类的绿是**组织出来的**，不能再撒一遍等距块。
+  green: 'lawn',
+  park: 'lawn',
+  civic: 'lawn',
 };
 
 /**

@@ -55,6 +55,17 @@ export type GroundProgram =
   | 'parking_aisle'
   /** 停车场里的**树岛**（车位组之间的绿带，不穿通道） */
   | 'parking_island'
+  /**
+   * 开阔草坪（修剪过的、可以踩上去的那种）。
+   *
+   * 和 `landscape`（种植区/野草地）分开，是因为公园和绿地需要**读得出层次**：
+   * 大草坪、树丛、花境在总图上是三种绿，一种绿铺满就分不出哪里能活动。
+   */
+  | 'lawn'
+  /** 种植区 / 密林 / 灌木带：不可进入的绿 */
+  | 'planting'
+  /** 公园里的次步道（碎石/透水，2~3 m）；主步道仍走 `pedestrian` */
+  | 'park_path'
   | 'landscape'
   | 'service'
   // 兜底

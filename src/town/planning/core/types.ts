@@ -9,7 +9,16 @@
 import type { Pt } from '../../../core/geom';
 import type { PlanSurface } from './surface';
 
-/** 六种场地类型 + 兜底（civic / park 这类目前不套专用语法） */
+/**
+ * 场地类型。
+ *
+ * `green` / `park` / `civic` 是本阶段接入的三类**非开发型用地**：
+ * 它们的共同点是"建筑不是主体"，空间组织由**人的通行**决定而不是由车。
+ * 三者必须有两两不同的语法，不能共用一个"随机绿地生成器"：
+ *   · green —— 连续绿地为主，只开必要的步行接入口，不切块；
+ *   · park  —— 从入口长出的主/次步道骨架，节点 + 草坪/种植区；
+ *   · civic —— 围绕公共建筑的主入口组织广场、步行与服务。
+ */
 export type SiteTypology =
   | 'industrial'
   | 'multi_family'
@@ -17,6 +26,9 @@ export type SiteTypology =
   | 'retail'
   | 'hotel'
   | 'data_center'
+  | 'green'
+  | 'park'
+  | 'civic'
   | 'generic';
 
 /** 出入口类型（PRD §5 的 access 分组） */

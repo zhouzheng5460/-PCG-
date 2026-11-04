@@ -230,12 +230,15 @@ ok('Planner 确实接管了地块', bundle.stats.covered > 0, `${bundle.stats.co
   );
 }
 
-// ---------------------------------------------------------------- ⑦ 只接三类
+// ---------------------------------------------------------------- ⑦ 接管名单
+//
+// 第一批三类（工业 / 住宅 / 零售）+ 第二批三类（绿地 / 公园 / 公共建筑）。
+// 名单是**显式白名单**：不在名单上的（酒店 / 数据中心 / 独栋 / generic）
+// 必须走 legacy，这条断言就是在防"顺手把没做完的类型也打开"。
 {
-  ok('第一批只接三类', PLANNER_ENABLED_TYPOLOGIES.length === 3 &&
-    PLANNER_ENABLED_TYPOLOGIES.includes('industrial') &&
-    PLANNER_ENABLED_TYPOLOGIES.includes('multi_family') &&
-    PLANNER_ENABLED_TYPOLOGIES.includes('retail'),
+  const want = ['industrial', 'multi_family', 'retail', 'green', 'park', 'civic'];
+  ok('接管名单 = 六类', PLANNER_ENABLED_TYPOLOGIES.length === want.length &&
+    want.every((t) => (PLANNER_ENABLED_TYPOLOGIES as string[]).includes(t)),
     PLANNER_ENABLED_TYPOLOGIES.join(','));
   const hotelCovered = [...bundle.reports.values()].filter(
     (r) => (r.typology === 'hotel' || r.typology === 'data_center' || r.typology === 'single_family') && r.covered

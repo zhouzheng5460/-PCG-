@@ -51,7 +51,15 @@ import type { PathFeature, PropFeature, SolidFeature, SurfaceFeature } from './t
 export type PlanningMode = 'legacy' | 'planner' | 'shadow';
 
 /** 第一批接管的 typology */
-export const PLANNER_ENABLED_TYPOLOGIES: SiteTypology[] = ['industrial', 'multi_family', 'retail'];
+export const PLANNER_ENABLED_TYPOLOGIES: SiteTypology[] = [
+  'industrial',
+  'multi_family',
+  'retail',
+  // 非开发型用地：建筑不是主体，空间由人的通行组织（P0 阶段接入）
+  'green',
+  'park',
+  'civic',
+];
 
 export const TYPOLOGY_LABEL: Record<SiteTypology, string> = {
   industrial: 'Industrial',
@@ -60,6 +68,9 @@ export const TYPOLOGY_LABEL: Record<SiteTypology, string> = {
   hotel: 'Hotel',
   data_center: 'Data Center',
   single_family: 'Single-Family',
+  green: 'Green',
+  park: 'Park',
+  civic: 'Civic',
   generic: 'Generic',
 };
 

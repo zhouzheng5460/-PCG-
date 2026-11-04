@@ -122,6 +122,10 @@ export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
   parking_aisle: 'curb',
   parking_island: 'grass',
   landscape: 'grassDark',
+  // 绿地层次：草坪（亮、可进入）/ 种植区（深、不可进入）/ 次步道（碎石）
+  lawn: 'lawn',
+  planting: 'grassDark',
+  park_path: 'gravel',
   service: 'asphalt',
   // 酒店
   arrival_court: 'stonePave',
@@ -219,6 +223,17 @@ export const TYPOLOGY_APPEARANCE: Record<
       { wall: 'wallStone', roof: 'roofLight' },
     ],
     note: '零售：玻璃幕墙为主',
+  },
+  civic: {
+    // 公共建筑：石材/浅色外墙 + 浅色平屋面。
+    // 不做玻璃幕墙（那是商业的语言），也不做深色屋面（那是住宅的语言）——
+    // 政务中心/文化馆在总图上就是"浅色、方正、压得住场子"的一栋。
+    walls: [
+      { wall: 'wallStone', roof: 'roofLight' },
+      { wall: 'wallConcrete', roof: 'roofLight' },
+      { wall: 'wallStone', roof: 'roofFlat' },
+    ],
+    note: '公共建筑：浅色石材外墙 + 浅色平屋面',
   },
   hotel: {
     walls: [
