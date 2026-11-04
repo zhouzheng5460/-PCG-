@@ -28,6 +28,8 @@ import { pointInRing, surfaceArea, surfaceIntersect, surfaceValid } from '../tow
 import { Pt } from '../core/geom';
 import { buildScene } from '../scene/build';
 import { buildPlannerBundle } from '../scene/planner-bridge';
+import { siteContextFromModel } from '../town/planning/adapters/model';
+import { distToSurfaceEdge } from '../town/planning/core/surface';
 
 // ---------------------------------------------------------------- 覆盖
 
@@ -44,6 +46,28 @@ export interface BlockCoverage {
   overlapM2: number;
 }
 
+/**
+ * B 类（只有底板、没有功能语义）的成因分类。
+ *
+ * 用户明确要求：不要为了把 B 压到 0 而填草坪 —— 所以这里**只分类，不填**。
+ * 每一类都有明确的处置结论（见 D3 报告）。
+ */
+export type BReason =
+  /** 道路路侧：人行道外沿到地块红线之间那条带（含绿带缺位处） */
+  | 'road-side'
+  /** 路口过渡：路口铺装圆角外、两条路夹出来的楔形 */
+  | 'junction-wedge'
+  /** 红线内、可建区外的退线带（planner 已用 setback 认领，这里应接近 0） */
+  | 'parcel-setback'
+  /** 地块内但没有任何 ground 面盖住（真归属缺口，但仍在红线内） */
+  | 'parcel-gap'
+  /** 城外/背景（不该被算进城内面积，正常应为 0） */
+  | 'outside'
+  /** Legacy 地块的底板：legacy 不走 Ground Program，底板就是它的最终表达 */
+  | 'legacy-plate'
+  /** 以上都不是 */
+  | 'unclassified';
+
 export interface CoverageAudit {
   stepU: number;
   samples: number;
@@ -53,10 +77,23 @@ export interface CoverageAudit {
   /** 首次跑时见过的"命中 0 个面"的位置（前若干条，便于复现） */
   holeSamples: string[];
   invalidRings: string[];
+  /** B 类按成因拆分（m² 与占比） */
+  bReason: Record<BReason, number>;
+  /** 每类 B 的典型位置（世界坐标，取该类面积最大的块的中心） */
+  bSamples: Record<BReason, { x: number; y: number; block: string } | null>;
+  /** 场景自述：seed / patch 数 / 城内块数 / planner 覆盖数，防止跨场景混用数据 */
+  scenario: { seed: number; nPatches: number; cityBlocks: number; plannerBlocks: number };
 }
 
-/** 合法表达层：叠在功能面之上本来就允许，不计入重叠 */
-const OVERLAY_RE = /_pk_|_island_|_stall_|_parkreq_|_circ_|_access_|_setback_|_road_|_pad_/;
+/**
+ * 合法表达层：**由产出方声明**（`SurfaceFeature.role`），不靠名字前缀。
+ *
+ * 名字是给人和 DCC 看的，不是契约：改个命名就会让审计失效。所以判定统一走
+ * `role === 'overlay'`；没标 role 的一律按独占的功能面处理（宁可误报，不可漏报）。
+ * 城市道路用 group 前缀 `road/` 判（那是 scene 层的分组约定，不是面名）。
+ */
+const isOverlay = (s: { role?: string }) => s.role === 'overlay';
+const isRoadGroup = (group: string) => group.startsWith('road');
 
 export interface CoverOpts {
   /** 采样步长（世界单位）。0.5 ≈ 3.5 m */
@@ -65,12 +102,12 @@ export interface CoverOpts {
   cellU?: number;
 }
 
-export function auditCoverage(model: Model, opts: CoverOpts = {}): CoverageAudit {
+export function auditCoverage(model: Model, net: RoadNet, opts: CoverOpts = {}): CoverageAudit {
   const STEP = opts.stepU ?? 0.5;
   const CELL = opts.cellU ?? 8;
   const scene = buildScene(model, { planningMode: 'planner', furniture: false, markings: false });
 
-  const isRoad = (s: SurfaceFeature) => s.group.startsWith('road');
+  const isRoad = (s: SurfaceFeature) => s.role === 'road' || isRoadGroup(s.group);
   const isLot = (s: SurfaceFeature) => s.group.startsWith('lot/');
   const isPlate = (s: SurfaceFeature) => s.group === 'ground';
 
@@ -127,6 +164,88 @@ export function auditCoverage(model: Model, opts: CoverOpts = {}): CoverageAudit
   });
   void ownerOf;
 
+  // ---- B 类分类需要的预备数据
+  // 每个 block 的红线（parcel）与"是否被 planner 接管"
+  const parcelOf = new Map<number, PlanSurface>();
+  const covered = new Set<string>();
+  const reports = (scene as unknown as { planner?: { reports: Map<string, { covered: boolean }> } }).planner?.reports;
+  if (reports) for (const [k, r] of reports) if (r.covered) covered.add(k);
+  model.patches.forEach((p, i) => {
+    if (p.blocked || !p.withinCity) return;
+    try {
+      parcelOf.set(i, siteContextFromModel(model, p, { net }).parcel);
+    } catch {
+      /* 读失败就不分类，落到 unclassified */
+    }
+  });
+  const junctions = net.junctions.map((j) => j.center);
+  const roadRings = scene.surfaces.filter((s) => isRoad(s)).map((s) => ({ outer: s.ring, holes: s.holes ?? [] }));
+  // 道路面按同一个网格再建一份索引：B 分类要对每个采样点算"到最近道路边缘的距离"，
+  // 全表扫是 O(采样 × 路面色)，实测 5000×1000=500 万次，太慢。
+  const roadGrid = new Map<string, { outer: PlanSurface['outer']; holes: PlanSurface['holes'] }[]>();
+  for (const r of roadRings) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const q of r.outer) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+    for (let cx = Math.floor(x0 / CELL) - 1; cx <= Math.floor(x1 / CELL) + 1; cx++) {
+      for (let cy = Math.floor(y0 / CELL) - 1; cy <= Math.floor(y1 / CELL) + 1; cy++) {
+        const k = keyOf(cx, cy);
+        const arr = roadGrid.get(k);
+        if (arr) arr.push(r);
+        else roadGrid.set(k, [r]);
+      }
+    }
+  }
+
+  const bReason: Record<BReason, number> = {
+    'road-side': 0,
+    'junction-wedge': 0,
+    'parcel-setback': 0,
+    'parcel-gap': 0,
+    outside: 0,
+    'legacy-plate': 0,
+    unclassified: 0,
+  };
+  const bSamples: Record<BReason, { x: number; y: number; block: string } | null> = {
+    'road-side': null,
+    'junction-wedge': null,
+    'parcel-setback': null,
+    'parcel-gap': null,
+    outside: null,
+    'legacy-plate': null,
+    unclassified: null,
+  };
+  /** 点到最近的城市道路面边缘的距离（世界单位）；找不到就 Infinity */
+  const distToRoad = (x: number, y: number): number => {
+    const near = roadGrid.get(keyOf(Math.floor(x / CELL), Math.floor(y / CELL)));
+    if (!near || near.length === 0) return Infinity;
+    const q = new Pt(x, y);
+    let best = Infinity;
+    for (const r of near) best = Math.min(best, distToSurfaceEdge(q, r));
+    return best;
+  };
+  const distToJunction = (x: number, y: number): number => {
+    let best = Infinity;
+    for (const j of junctions) best = Math.min(best, Math.hypot(j.x - x, j.y - y));
+    return best;
+  };
+  /**
+   * 给一个"只有底板"的采样点定成因。
+   *
+   * 判据顺序是按**确定性**排的：先排除结构性原因（路口楔形 > 路侧带 > 红线退线），
+   * 剩下的才叫 unclassified。这样"说不清"的面积被压到最小。
+   */
+  const classifyB = (x: number, y: number, block: string, patchIdx: number, inParcel: boolean, isLegacy: boolean): BReason => {
+    if (distToJunction(x, y) < 12 / 7) return 'junction-wedge';
+    if (distToRoad(x, y) < 14 / 7) return 'road-side';
+    if (inParcel) {
+      // 红线内、可建区外 = 退线带；planner 已经用 setback 认领，这里应该几乎没有
+      return 'parcel-setback';
+    }
+    if (isLegacy) return 'legacy-plate';
+    void patchIdx;
+    return 'unclassified';
+  };
+
   const cellA = STEP * STEP * 49;
   let samples = 0;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -142,11 +261,13 @@ export function auditCoverage(model: Model, opts: CoverOpts = {}): CoverageAudit
     for (let y = y0; y <= y1; y += STEP) {
       samples++;
       let rec: BlockCoverage | null = null;
+      let pi = -1;
       for (let i = 0; i < model.patches.length; i++) {
         const p = model.patches[i];
         if (p.blocked || !p.withinCity) continue;
         if (!pointInRing(new Pt(x, y), Array.from(p.shape))) continue;
         rec = recOf.get(i) ?? null;
+        pi = i;
         break;
       }
       if (!rec) continue;
@@ -166,11 +287,18 @@ export function auditCoverage(model: Model, opts: CoverOpts = {}): CoverageAudit
       hits.sort((a, b) => b.y - a.y);
       const top = hits[0];
       if (isRoad(top)) rec.roadM2 += cellA;
-      else if (isPlate(top)) rec.plateM2 += cellA;
-      else if (isLot(top)) rec.plannedM2 += cellA;
+      else if (isPlate(top)) {
+        rec.plateM2 += cellA;
+        const parcel = parcelOf.get(pi);
+        const inParcel = parcel ? pointInRing(new Pt(x, y), parcel.outer) : false;
+        const isLegacy = !covered.has(rec.block);
+        const why = classifyB(x, y, rec.block, pi, inParcel, isLegacy);
+        bReason[why] += cellA;
+        if (!bSamples[why]) bSamples[why] = { x: +x.toFixed(1), y: +y.toFixed(1), block: rec.block };
+      } else if (isLot(top)) rec.plannedM2 += cellA;
       else rec.plannedM2 += cellA;
 
-      const excl = hits.filter((h) => isLot(h) && !OVERLAY_RE.test(h.name));
+      const excl = hits.filter((h) => isLot(h) && !isOverlay(h));
       if (excl.length >= 2) rec.overlapM2 += cellA;
     }
   }
@@ -193,6 +321,14 @@ export function auditCoverage(model: Model, opts: CoverOpts = {}): CoverageAudit
     blocks: blockList,
     holeSamples,
     invalidRings,
+    bReason,
+    bSamples,
+    scenario: {
+      seed: 682063530,
+      nPatches: model.patches.length,
+      cityBlocks: blockList.length,
+      plannerBlocks: covered.size,
+    },
   };
 }
 
@@ -244,7 +380,7 @@ export function auditOverlap(model: Model, net: RoadNet): OverlapAudit {
   for (const [block, feats] of bundle.byParcel) {
     blocks++;
     const list = feats.surfaces
-      .filter((s) => !OVERLAY_RE.test(s.name))
+      .filter((s) => !isOverlay(s))
       .map((s) => ({ name: s.name, s: { outer: s.ring, holes: s.holes ?? [] } as PlanSurface, box: box(s.ring) }));
     surfaces += list.length;
     for (const l of list) if (!surfaceValid(l.s)) invalidRings.push(l.name);

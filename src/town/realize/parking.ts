@@ -134,6 +134,7 @@ export function realizeParking(
         ring: a,
         mat: 'curb',
         y: base + 0.0018,
+        role: 'overlay',
       });
     }
     for (const [k, isl] of layout.islands.entries()) {
@@ -143,6 +144,7 @@ export function realizeParking(
         ring: isl,
         mat: 'grass',
         y: base + 0.0022,
+        role: 'overlay',
       });
     }
     // 模块之间的横向步道：铺**沥青**（比车位底色深一档），
@@ -154,6 +156,7 @@ export function realizeParking(
         ring: wk,
         mat: 'curb',
         y: base + 0.0019,
+        role: 'overlay',
       });
     }
 

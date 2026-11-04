@@ -293,19 +293,17 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   // 店前人行带（贴着店铺的正面）
   const fore = cut(shopU0, shopU1, variant.parking === 'rear' ? shopV1 : shopV0 - foreD, variant.parking === 'rear' ? shopV1 + foreD : shopV0);
 
-  // 从停车到店门的步行通道：**只走停车场内部那一段**。
+  // 停车 → 店门的步行带：**不再生成**。
   //
-  // 早先写成 min(parkV0, shopV0) ~ max(parkV1, shopV1) —— 那是"从地块最南
-  // 到最北"，一条面把停车场、店前人行带、店铺全部盖住（实测 retail 的
-  // parking×pedestrian 6581 m² / 27 处、forecourt×pedestrian 1080 m² / 27 处
-  // 全是它）。真实超市停车场就是一条人行道从场中穿过、把它切成两片，
-  // 所以范围收到 parkV0~parkV1 既正确又够用。
-  const midU = (shopU0 + shopU1) / 2;
-  // 只有停车场够宽（>= 20 m）才切这一刀：5 m 的人行道在 30 m 宽的场里
-  // 是"一分为二"，在 14 m 宽的场里就是"砍掉三分之一"，停车量直接掉到不合格。
-  // 窄场不加人行道 —— 店前人行带（fore）已经承担了这段动线。
-  const walkOk = (parkU1 - parkU0) * 7 >= 20;
-  const walk = walkOk ? cut(midU - U(2.5), midU + U(2.5), parkV0, Math.min(parkV1, v1)) : null;
+  // 原来这里有一条 5 m 宽、贯穿停车场的硬质带（用户：「硬质铺装盖在停车场地块上，
+  // 只是在粗糙地改变停车场的最终视觉，并没有真的做停车场布局」）。
+  // 它确实是这么回事：一条居中、等宽、从头到尾的带子既不贴合车位排布，
+  // 也会把停车区切成两片、让每一片都掉到面积不合格。
+  //
+  // 真实停车场的步行就是**通道本身** —— 人从车位走到通道，通道走到店前带。
+  // 所以这条带子取消，动线交给 `fore`（店前人行带）和停车场自己的通道。
+  // `parkingRequests` 里的"到店门"意图保留在数据里（见 notes）。
+  const walk: PlanSurface | null = null;
 
   // 后侧服务道
   const svcV0 = Math.max(v1 - laneD, shopV1);

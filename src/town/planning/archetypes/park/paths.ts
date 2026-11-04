@@ -114,12 +114,21 @@ function build(ctx: SiteContext, f: SiteFrame, spec: Spec): SitePlanCandidate | 
 
   // ---- ③ 入口支路
   for (const e of streets.slice(0, 2)) {
-    const start = new Pt(e.at.x + f.vDir.x * U(1.5), e.at.y + f.vDir.y * U(1.5));
+    // 起点必须**贴到红线**（0.5 m），不能从 1.5 m 处起 —— 原来留的这 10.5 m 缝
+    // 让"街道 → 入口"断在半路（D4 实测：入口连通 0/2，所有公园都这样）。
+    // 方向仍用 `f.vDir`（主临街面内向）。
+    //
+    // D4 试过改成"每条边自己的法线"，结果 3/4 变 2/4 —— 次临街面在张量场切出来的
+    // 地块上常常是斜的，自己的法线指向的并不是"往里去"而是"斜着穿"。这条留作
+    // 已知问题记录在报告里（要修得先有"从边到环路的最近落点"，属于重写生成器）。
+    const dir = f.vDir;
+    const start = new Pt(e.at.x + dir.x * U(0.5), e.at.y + dir.y * U(0.5));
     const lenU = used === 'loop' ? U(spec.loopM + spec.loopW) : null;
-    const end =
-      lenU !== null ? new Pt(start.x + f.vDir.x * lenU, start.y + f.vDir.y * lenU) : center;
+    const end = lenU !== null ? new Pt(start.x + dir.x * lenU, start.y + dir.y * lenU) : center;
+    // 入口支路裁到**红线**而不是可建区：它本来就是穿过退线带接到街上的那一段，
+    // 裁到可建区就等于在离街 5 m 的地方断头（D4 实测入口连通 0/2 —— 差的正是这 5 m）。
     const r = ribbon(start, end, U(4));
-    const clipped = r ? clipTo(r, [buildable]) : null;
+    const clipped = r ? clipTo(r, [ctx.parcel]) : null;
     if (clipped) {
       add('pedestrian', clipped, used === 'loop' ? '入口支路（街 → 环路）' : '主步道（入口 → 中心）');
       hard.push(clipped);
@@ -127,7 +136,7 @@ function build(ctx: SiteContext, f: SiteFrame, spec: Spec): SitePlanCandidate | 
     access.push({
       kind: 'pedestrian',
       at: e.at,
-      normal: f.vDir,
+      normal: dir,
       role: 'pedestrian',
       frontage: e.note.includes('主') ? 'primary' : 'secondary',
       notes: [e.note],

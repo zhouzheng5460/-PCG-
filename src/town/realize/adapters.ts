@@ -89,6 +89,7 @@ export function realizeGround(
           ring: p.outer,
           mat: GROUND_MATERIAL[ctx.setbackProgram ?? 'landscape'] ?? 'grass',
           y: base - 0.0002,
+        role: 'overlay',
           ...(p.holes.length > 0 ? { holes: p.holes } : {}),
         });
       }
@@ -171,23 +172,18 @@ export function realizeBuildings(c: SitePlanCandidate, ctx: RealizationContext, 
 
 /** R3 · PlannedAccess → 短带（gate / walkway / apron） */
 export function realizeAccess(c: SitePlanCandidate, ctx: RealizationContext, part: RealizerPart): void {
-  const base = ctx.groundY ?? 0.012;
-  c.access.forEach((a, i) => {
-    const w = ACCESS_WIDTH_M[a.kind] ?? 4;
-    // 门带：从开口点沿法线向内 6 m（不长到穿进建筑，那由 Planner 的 access 位置决定）
-    const len = a.kind === 'pedestrian' ? U(6) : U(9);
-    const n = a.normal;
-    const p0 = a.at;
-    const p1 = new Pt(a.at.x + n.x * len, a.at.y + n.y * len);
-    part.paths.push({
-      name: `${c.id}_access_${a.role}_${i}`,
-      group: ctx.group,
-      pts: [p0, p1],
-      width: U(w),
-      mat: a.kind === 'pedestrian' ? 'paver' : 'asphalt',
-      y: base + 0.0014,
-    });
-  });
+  // **开口不再落地成几何**。
+  //
+  // 原来每个 access 都在开口处铺一条 6~9 m 宽的带子（paver/asphalt），从地块
+  // 边缘往街里伸。结果就是用户看到的那颗"米色的胶囊"死死压在车行道上 ——
+  // 既不是真实的车道，也不是人行横道，只是把数据里的一个点画成了一个面。
+  //
+  // 开口是**语义信息**（这个地块在这里可以进出），不是几何。真正该画的东西
+  // 是"引道"（`driveway`，出入口那一段实实在在的铺装），那已经由道路侧和
+  // Ground Program 各自表达了。所以这里只保留数据，不产出几何。
+  void c;
+  void ctx;
+  void part;
 }
 
 /** R5（轻量版） · circulation → 场景路径（还没有接 road/system，先成面） */
@@ -224,6 +220,7 @@ export function realizeParkingRequests(
       // 在 3D 和带底色的平面图里，浅底 + 白线等于什么都没有 —— 整片场地糊成一块。
       mat: 'asphaltLot',
       y: base + 0.0005,
+        role: 'overlay',
       ...(r.region.holes.length > 0 ? { holes: r.region.holes } : {}),
     });
     if (ctx.solveParking) {

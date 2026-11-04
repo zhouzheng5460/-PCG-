@@ -155,15 +155,34 @@ function pickServiceEdge(ring: Pt[], main: { at: Pt; normal: Pt }): { at: Pt; no
 export function streetAccessPoints(ctx: SiteContext, f: SiteFrame): Anchor[] {
   const out: Anchor[] = [];
   const seen = new Set<string>();
+  // 法线由**这条边自己的**垂线定，不能用主临街面的 `f.vDir` —— 次临街面往往
+  // 和主临街面垂直，拿 f.vDir 当法线会让入口支路沿着街跑而不是往地块里跑
+  // （D4 实测：207:571 的 loop 入口连通只有 1/2，差的就是这一条）。
+  const center = (() => {
+    const r = f ? [f.origin] : [];
+    void r;
+    return null;
+  })();
+  void center;
   const add = (a: Pt, b: Pt, frontage: 'primary' | 'secondary') => {
     const key = `${a.x.toFixed(1)},${a.y.toFixed(1)}`;
     if (seen.has(key)) return;
     seen.add(key);
     const mid = new Pt((a.x + b.x) / 2, (a.y + b.y) / 2);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    let nx = -dy / len;
+    let ny = dx / len;
+    // 朝内：把法线翻到与"主临街面内向"同侧（两者夹角 <90° 就是内侧）
+    if (nx * f.vDir.x + ny * f.vDir.y < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
     out.push({
       at: mid,
-      normal: f.vDir,
-      width: Math.hypot(b.x - a.x, b.y - a.y),
+      normal: new Pt(nx, ny),
+      width: len,
       source: 'frontage',
       note: frontage === 'primary' ? '主临街面中点' : '次临街面中点',
     });

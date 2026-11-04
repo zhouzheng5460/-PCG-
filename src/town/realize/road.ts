@@ -133,7 +133,9 @@ export function realizeRoads(
       for (const side of [1, -1] as const) {
         const curb = sideStrip(a, b, halfW, U(profile.curbM), side);
         const c2 = curb ? clipSurface(curb, opts.clip) : null;
-        if (c2) part.surfaces.push({ name: `${name}_curb_${k}_${side}`, group: ctx.group, ring: c2, mat: profile.curbMat, y: base + 0.0018 });
+        // 路缘石是**边界表达**：它本来就骑在"路面 / 场地"的接缝上，
+        // 两侧各压一部分是它的语义，不是重复认领。标 overlay。
+        if (c2) part.surfaces.push({ name: `${name}_curb_${k}_${side}`, group: ctx.group, ring: c2, mat: profile.curbMat, y: base + 0.0018, role: 'overlay' });
       }
       // 人行道（可选）
       if ((opts.sidewalk ?? profile.sidewalkM > 0) && profile.sidewalkM > 0) {
@@ -151,7 +153,9 @@ export function realizeRoads(
       const pad = square(p, path.width > 0 ? path.width : U(profile.surfaceM));
       const p2 = pad ? clipSurface(pad, opts.clip) : null;
       if (!p2) continue;
-      part.surfaces.push({ name: `${name}_pad_${k}`, group: ctx.group, ring: p2, mat: profile.mat, y: base + 0.0016 });
+      // 顶点方垫是**表达层**：它就是为了盖住两段直角相交处的缝，
+      // 天然与相邻段矩形重叠。用 role 声明，而不是让审计去猜名字。
+      part.surfaces.push({ name: `${name}_pad_${k}`, group: ctx.group, ring: p2, mat: profile.mat, y: base + 0.0016, role: 'overlay' });
       corridors.push(surface(p2));
       junctions++;
     }

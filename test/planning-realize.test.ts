@@ -115,16 +115,15 @@ function checkParity(label: string, c: SitePlanCandidate): void {
     );
   }
 
-  // ③ 开口端点零漂移
+  // ③ 开口**只保留数据、不产出几何**
+  //
+  // 这条断言原来写的是"每个开口都必须落地成一条 Path"。阶段 D 把它反过来了：
+  // 开口是语义（这里可以进出），不是几何 —— 落地之后就是一颗米色的胶囊
+  // 压在车行道上（用户明确否掉了）。真正该画的是 `driveway`，那由道路侧表达。
+  // 所以现在断言 **0 条**，而且开口数据必须还在（不能顺手把语义也删了）。
   const accPaths = r.paths.filter((p) => p.name.includes('_access_'));
-  ok(`${label} 开口全部落地`, accPaths.length === c.access.length, `${accPaths.length}/${c.access.length}`);
-  let maxDrift = 0;
-  for (let i = 0; i < Math.min(accPaths.length, c.access.length); i++) {
-    const p0 = accPaths[i].pts[0];
-    const a = c.access[i].at;
-    maxDrift = Math.max(maxDrift, Math.hypot(p0.x - a.x, p0.y - a.y));
-  }
-  ok(`${label} 开口端点漂移 < 1e-6`, maxDrift < 1e-6, `${maxDrift}`);
+  ok(`${label} 开口不落地成几何`, accPaths.length === 0, `${accPaths.length} 条`);
+  ok(`${label} 开口数据保留`, c.access.length > 0, `${c.access.length} 个`);
 
   // ④ 停车区域必须原样（面积一致，且不被扩大）
   const parkSurf = r.surfaces.filter((s) => s.name.includes('_parkreq_'));

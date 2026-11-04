@@ -20,6 +20,20 @@ export interface SurfaceFeature {
   mat: MatKey;
   /** 高度偏移，用来解决共面 z-fighting；语义上代表"这一层比地面高多少" */
   y: number;
+  /**
+   * 这一层的**语义角色**（阶段 D5）。
+   *
+   * 之前审计靠名字前缀（`_pk_` / `_parkreq_`）判断"这是不是表达层"——
+   * 那是拿命名当契约，改个名字就崩。现在由产出方直接声明：
+   *
+   *   · `ground`   规划出来的功能面，**同一点只能有一个**（独占）
+   *   · `overlay`  表达层：车位线、车位/树岛、停车请求面、退线带、道路细节、
+   *                地块内部路径。它们本来就叠在 `ground` 之上，允许重叠。
+   *   · `road`     城市道路（自有层级，不参与地块独占判定）
+   *
+   * 不填 = `ground`（向后兼容，老代码不用改）。
+   */
+  role?: 'ground' | 'overlay' | 'road';
 }
 
 export type SolidKind =

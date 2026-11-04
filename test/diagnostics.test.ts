@@ -29,7 +29,7 @@ const net = buildRoadNet(m);
 
 // ---------------------------------------------------------------- D1 覆盖
 {
-  const cov = auditCoverage(m);
+  const cov = auditCoverage(m, net);
   const A = cov.share['A-road'] + cov.share['A-building'] + cov.share['A-planned'];
   console.log(
     `D1 覆盖（${cov.blocks.length} 块 ${(cov.totalM2 / 10000).toFixed(1)}ha）：` +
@@ -42,6 +42,18 @@ const net = buildRoadNet(m);
   ok('D1 B 仅底板 ≤12%', cov.share['B-plate'] <= 0.12, `${(cov.share['B-plate'] * 100).toFixed(1)}%`);
   ok('D1 无非法环', cov.invalidRings.length === 0, cov.invalidRings.slice(0, 3).join(','));
   ok('D1 每块都有面积归属', cov.blocks.every((b) => b.totalM2 > 0));
+
+  // D3：B 类必须有成因归类，且"说不清"的那一类要足够小
+  const br = cov.bReason;
+  const bTotal = Object.values(br).reduce((a, v) => a + v, 0);
+  const unclassified = br.unclassified / Math.max(bTotal, 1);
+  console.log(
+    `D3 B 类成因：` +
+    Object.entries(br).map(([k, v]) => `${k} ${((v / Math.max(bTotal, 1)) * 100).toFixed(0)}%`).join(' · ') +
+    `（B 合计 ${(bTotal / 10000).toFixed(2)} ha）`
+  );
+  ok('D3 B 类全部有成因归类', unclassified <= 0.25, `${(unclassified * 100).toFixed(0)}% 未归类`);
+  ok('D3 场景自述完整', cov.scenario.cityBlocks > 0 && cov.scenario.seed === 682063530, JSON.stringify(cov.scenario));
 }
 
 // ---------------------------------------------------------------- D2 精确重叠

@@ -151,10 +151,20 @@ for (const u of USES) {
       for (const p of g.surface.outer) {
         if (pointInRing(p, ctx.buildableArea.outer)) continue;
         if (distToRing(p, ctx.buildableArea.outer) < 0.02) continue;
+        // 入口支路**允许**跨过退线带：它本来就是"街 → 公园"那一段，
+        // 裁在可建区边界上就等于断在离街 5 m 的地方（D4 实测入口连通 0/2）。
+        // 但它仍然不能出红线。
+        // 裁到红线时顶点会正好落在红线上（x=40.00 这种），pointInRing 对边界点返回 false，
+        // 所以这里也要给 2 cm 容差，否则「贴边」会被当成「越界」。
+        if (
+          g.program === 'pedestrian' &&
+          (pointInRing(p, ctx.parcel.outer) || distToRing(p, ctx.parcel.outer) < 0.02)
+        )
+          continue;
         outside++;
       }
     }
-    ok(`${u.label}${i + 1} 地面不越出可建区`, outside === 0, `${outside} 个顶点越界`);
+    ok(`${u.label}${i + 1} 地面不越出可建区（入口支路可到红线）`, outside === 0, `${outside} 个顶点越界`);
 
     // 有临街面就必须有步行入口
     if (ctx.primaryFrontage && cs.name !== '小面积 18×22') {
