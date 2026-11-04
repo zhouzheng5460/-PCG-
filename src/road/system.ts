@@ -1185,8 +1185,65 @@ function arcPts(o: Pt, p0: Pt, p1: Pt, n: number): Pt[] {
   return out;
 }
 
-/** 沿街角弧取这么多段。4 段在 90° 转角上是 22.5°/段，肉眼已经是圆的 */
+
 /**
+ * 把一条**开放折线**朝 `toward` 那一侧偏移，每个点可以给不同宽度。
+ *
+ * 端点只用法线；中间点用两条相邻法线的 miter，夹角太尖时按上限截断
+ * （cos 下限 0.45 ≈ 每侧最多拉伸 2.2 倍），避免尖角甩出一根长刺。
+ *
+ * 为什么不用 `insetRing`：那个函数吃的是**闭环**，而这里的输入是
+ * "收口点 → 切点 → 圆角弧 → 切点 → 收口点"这条开放的折线；
+ * 强行闭环会让收口那一刀也参与偏移，把整条带挤歪。
+ */
+function offsetPolyline(
+  pts: Pt[],
+  widths: number[],
+  toward: Pt,
+  cosLimit = 0.45
+): Pt[] | null {
+  const n = pts.length;
+  if (n < 2) return null;
+  const segN: Pt[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const dx = pts[i + 1].x - pts[i].x;
+    const dy = pts[i + 1].y - pts[i].y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-9) return null;
+    const d = { x: dx / len, y: dy / len };
+    let nx = -d.y;
+    let ny = d.x;
+    const mx = (pts[i].x + pts[i + 1].x) / 2;
+    const my = (pts[i].y + pts[i + 1].y) / 2;
+    if ((toward.x - mx) * nx + (toward.y - my) * ny < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    segN.push(new Pt(nx, ny));
+  }
+  const out: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const n0 = segN[Math.max(0, i - 1)];
+    const n1 = segN[Math.min(segN.length - 1, i)];
+    let mx = n0.x + n1.x;
+    let my = n0.y + n1.y;
+    const ml = Math.hypot(mx, my);
+    if (ml < 1e-6) {
+      // 180° 折返（几乎平行反向的段）：退化成单边法线，不去造 miter
+      mx = n1.x;
+      my = n1.y;
+    } else {
+      mx /= ml;
+      my /= ml;
+    }
+    const cos = Math.max(cosLimit, mx * n0.x + my * n0.y);
+    const w = widths[i] ?? widths[0] ?? 0;
+    out.push(new Pt(pts[i].x + (mx * w) / cos, pts[i].y + (my * w) / cos));
+  }
+  return out;
+}
+
+/** 沿街角弧取这么多段。4 段在 90° 转角上是 22.5°/段，肉眼已经是圆的 *//**
  * 一条缘石弧用几段折线。
  *
  * 原来是 4 段 —— 对 3~4 m 的转角弧，每段对应约 22°，俯视图上读起来就是
@@ -1220,33 +1277,60 @@ export function cornerPaving(
 ): Pt[] | null {
   const A = armPts(a);
   const B = armPts(b);
+
+  // ---- 主路径：把"路缘折线"整条按宽度偏到街区一侧 ----
+  //
+  // 人行道在转角处的形状，本质上就是**一条沿路缘的等宽带**：
+  //   内边界 = 路缘折线 [收口点A → 切点ta → 圆角弧 → 切点tb → 收口点B]
+  //   外边界 = 同一条折线朝**街区内侧**偏移 wA（A 段）/ wB（B 段）/ 弧段渐变
+  //
+  // 早先的写法不是这样：它拿两条**外偏直线求交**定出"红尖" xo，再裁到街角块。
+  // 那只在直角路口成立 —— 张量场切出来的路口大多不是 90°，两条外偏线要么
+  // 几乎平行（xo 飞到几十米外），要么交点缩回路缘转角以内，于是直接 return null。
+  // 实测 157 个转角里 **140 个一块铺装都拿不到**（noXo 41 / notBeyond 97）：
+  // 转角处根本没有人行道，两条直街带各自在地块角上截断 ——
+  // 这就是用户看到的"更宽的路口圆角退为折线"。
+  //
+  // 现在改成**按折线偏移**：不需要任何两条线相交，任何夹角都成立；
+  // 弧段上的宽度从 wA 线性过渡到 wB，转角因此永远是圆角而不是斜切。
+  const inner = c.r > 1e-4 ? arcPts(c.o, c.ta, c.tb, ARC_SEGS) : [c.x];
+  if (inner.length >= 2) {
+    const spine = dedupeRing([A.pL, ...inner, B.pR], 1e-6);
+    if (spine.length >= 3) {
+      // 宽度沿折线渐变的参数：A 段 0 → 弧段 → B 段 1
+      const nA = 1; // A.pL
+      const nB = spine.length - 1; // B.pR
+      const widths = spine.map((_, i) => {
+        const t = Math.min(1, Math.max(0, (i - nA) / Math.max(1, nB - nA)));
+        return wA + (wB - wA) * t;
+      });
+      const outer = offsetPolyline(spine, widths, c.r > 1e-4 ? c.o : center);
+      if (outer) {
+        const band = dedupeRing([...spine, ...[...outer].reverse()]);
+        if (band.length >= 3 && Math.abs(signedArea(band)) > 1e-7 && isSimpleRing(band)) {
+          cornerStats.arc++;
+          return band;
+        }
+      }
+      cornerStats.bandSelf++;
+    }
+  }
+
   const aOut = offLine(A.pL, a.n, wA);
   const bOut = offLine(B.pR, b.n, -wB);
   const xo = lineHit(aOut, a.dir, bOut, b.dir);
 
   // 外边一定存在：两条红线近乎平行时交点在很远处，那样的转角本来就不该铺
-  if (!xo) return null;
-  if (Pt.distance(xo, center) > 8 * Math.max(wA + wB, a.pad + b.pad, 0.5)) return null;
+  if (!xo) { cornerStats.noXo++; return null; }
+  if (Pt.distance(xo, center) > 8 * Math.max(wA + wB, a.pad + b.pad, 0.5)) { cornerStats.xoFar++; return null; }
 
   // 外尖必须在**路缘转角**的外侧。缩回转角之内意味着这个街角块被邻路的车行道
   // 咬掉了，闭环必然自交 —— 宁可不铺。收口线之内则是合法的（第三条臂更宽时，
   // 收口线被推得更远），那时外边界会自然形成一个凹口，正好让位给那条臂的铺装。
   const beyond = (q: Pt, dir: Pt) => (xo.x - q.x) * dir.x + (xo.y - q.y) * dir.y >= -1e-6;
-  if (!beyond(c.x, a.dir) || !beyond(c.x, b.dir)) return null;
+  if (!beyond(c.x, a.dir) || !beyond(c.x, b.dir)) { cornerStats.notBeyond++; return null; }
 
-  const inner = c.r > 1e-4 ? arcPts(c.o, c.ta, c.tb, ARC_SEGS) : [c.x];
-
-  // ---- 外边界也走弧（人行道在转角处应当是**圆角**，不是斜切）----
-  //
-  // 旧实现的外边界是"两条垂足 + 红线交点"的折线（A.pL → B.pR → bOut → xo → aOut），
-  // 于是人行道外侧看起来是一道斜切。原因写在下面的历史注释里：
-  // 当年 r 只有 2.4 m、铺装带 3 m，r < w，把弧按 r+w 外推时外推点会**跨过圆心**
-  // 落到另一侧，整片铺装翻面成蝴蝶结，所以只能退回避开外推。
-  //
-  // 现在转角半径做到 6~14 m（见 cornerOf 的收口重算），r > w 已经是常态，
-  // 外推不再翻面。做法：同心弧，半径 = r + 铺装带宽，然后**裁到"街角块"**
-  //（A.pL → B.pR → bOut → xo → aOut）—— 超红线的那一段自然被切掉，
-  // 弧在红线内的部分保留。
+  // ---- 旧的"同心弧 + 裁到街角块"（保留作兜底）----
   if (c.r > 1e-4) {
     const wOut = Math.max(wA, wB);
     const rOut = c.r + wOut;
@@ -1262,24 +1346,57 @@ export function cornerPaving(
       if (arcRing.length >= 3 && clip.length >= 3) {
         const clipped = clipRingTo(arcRing, clip);
         if (clipped && clipped.length >= 3 && Math.abs(signedArea(clipped)) > 1e-7 && isSimpleRing(clipped)) {
+          cornerStats.arc++;
           return clipped;
         }
-      }
+        cornerStats.clipFail++;
+      } else cornerStats.shortRing++;
     }
   }
 
   const ring = dedupeRing([A.pL, ...inner, B.pR, bOut, xo, aOut]);
-  if (ring.length >= 3 && Math.abs(signedArea(ring)) > 1e-7 && isSimpleRing(ring)) return ring;
+  if (ring.length >= 3 && Math.abs(signedArea(ring)) > 1e-7 && isSimpleRing(ring)) {
+    cornerStats.mitre++;
+    return ring;
+  }
 
   // 退路：不收弧，直接铺"两条路缘之间的方块"（A.pL → B.pR → 两条红线）。
   // 曾经用两条街带围成的平行四边形兜底，但它会在转角外侧甩出一个尖角，
   // 俯视图上就是一个扎进路面的三角刺 —— 宁可这个角是平的，也不要刺。
   const flat = dedupeRing([A.pL, B.pR, bOut, aOut]);
-  if (flat.length < 3) return null;
-  if (Math.abs(signedArea(flat)) < 1e-7) return null;
-  if (!isSimpleRing(flat)) return null;
+  if (flat.length < 3) { cornerStats.flatFail++; return null; }
+  if (Math.abs(signedArea(flat)) < 1e-7) { cornerStats.flatZero++; return null; }
+  if (!isSimpleRing(flat)) { cornerStats.flatSelf++; return null; }
+  cornerStats.flat++;
   return flat;
 }
+
+/** 街角铺装的产出统计（诊断用：哪一档在起作用、哪一档在失败） */
+export const cornerStats = {
+  /** 用了同心圆弧（最好） */
+  arc: 0,
+  /** 圆弧被裁失败，退回"内弧 + 直线外边" */
+  clipFail: 0,
+  shortRing: 0,
+  /** 内弧 + 直线外边 */
+  mitre: 0,
+  /** 纯直方块兜底 */
+  flat: 0,
+  flatFail: 0,
+  flatZero: 0,
+  flatSelf: 0,
+  /** 环形带自交（几乎不该发生，出现说明转角几何本身坏了） */
+  bandSelf: 0,
+  /** 连兜底都不成立 —— 这个角**一块铺装都没有** */
+  none: 0,
+  /** 两条红线不相交（近乎平行） */
+  noXo: 0,
+  /** 红尖离路口太远（≥8 倍收口距离） */
+  xoFar: 0,
+  /** 红尖缩回到路缘转角以内（被邻臂车行道咬掉） */
+  notBeyond: 0,
+};
+
 
 /** 用 clip 环去裁 source 环（取面积最大的那一块） */
 function clipRingTo(source: Pt[], clip: Pt[]): Pt[] | null {

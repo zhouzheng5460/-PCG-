@@ -52,9 +52,18 @@ const U = (m: number) => m / 7;
 type Intensity = 'low' | 'medium' | 'high';
 
 const INTENSITY_K: Record<Intensity, { w: number; d: number }> = {
-  low: { w: 0.64, d: 0.62 },
-  medium: { w: 0.7, d: 0.7 },
-  high: { w: 0.78, d: 0.8 },
+  // 强度档只做"微调"，不做"腰斩"。
+  //
+  // 原来 low/medium/high 是 0.62/0.70/0.80，而且 **w 和 d 同时乘** ——
+  // 面积上是 0.49 的折扣：一块能盖 41% 的工业地只剩 20%，俯视图上读成
+  // "一大片空场 + 一间仓"，跟 TestFit 的工业参考（厂房 40~50%、货场/停车
+  // 30~40%、绿化 10~15%）完全是两种东西。
+  //
+  // 工业场地的现实是：**厂房由地块定**，松紧体现在货场和服务道的宽裕程度。
+  // 所以强度档现在只影响 3~14% 的体量，剩下的差异交给前场/货场比例去表达。
+  low: { w: 0.86, d: 0.88 },
+  medium: { w: 0.93, d: 0.95 },
+  high: { w: 0.98, d: 1.0 },
 };
 
 interface Variant {
@@ -184,7 +193,7 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   if (truck < U(10)) notes.push('truck court 偏浅（< 10 m），大车掉头困难');
 
   // ---- 仓库面宽与偏移
-  const whW = Math.min(W * 0.86 * kk.w, W - U(8));
+  const whW = Math.min(W * 0.9 * kk.w, W - U(8));
   if (whW < U(10)) return null;
   const shift = variant.sideShift * W;
   let whU0 = u0 + (W - whW) / 2 + shift;

@@ -8,7 +8,7 @@ import { Pt } from '../core/geom';
 import type { PropFeature } from '../scene/types';
 import { MAT, treeGreen } from '../scene/palette';
 import type { Primitive } from './mesh';
-import { box, cylinder, flatPolygon } from './mesh';
+import { box, cylinder, cone, flatPolygon } from './mesh';
 
 const WHITE: [number, number, number] = [0.94, 0.94, 0.9];
 
@@ -23,56 +23,44 @@ export function buildProp(p: PropFeature, baseY = 0.01): Primitive[] {
   const dirY = Math.sin(rot);
 
   switch (p.kind) {
-    // 树一律是**立方体 + 一根极细的树干**。
-    // 绿从 palette.TREE_GREENS 里按 seed 取，所以同一片林子是深浅不一的绿，
-    // 不会像原来那样一堆锥体糊成一块同色斑。2D 画布读的是同一张表。
+    // 树：树干 + **两层锥形树冠**（上锥尖朝上、下锥尖朝下，叠成一个八面体-like
+    // 的团块）。
+    //
+    // 原来是"立方体 + 极细树干"。理由写的是"2D 和 3D 读同一张表"，
+    // 但那个理由只在**俯视图**成立：3D 里一棵棵绿方块，一个街区就是一堆
+    // 边长十米的绿色骰子，比没有树还难看（用户 3D 截图里最扎眼的就是它）。
+    // 换成两层锥之后：任何角度都是"一团树冠"，三角面数还从 12 降到 14 但
+    // 没有底面，顶点更少；俯视投影是圆形而不是方形，2D 反而更像树。
+    //
+    // 绿从 palette.TREE_GREENS 里按 seed 取，所以同一片林子深浅不一。
     case 'tree': {
-      const th = 0.5 * s;
+      const th = 0.42 * s;
       const g1 = treeGreen(p.seed);
+      const cr = 0.4 * s;
+      const ch = 0.68 * s;
       out.push(cylinder(c, 0.032 * s, y0, th, `${p.name}_t`, g, MAT.trunk, 3));
-      out.push(
-        ...box(
-          new Pt(c.x, c.y),
-          0.62 * s,
-          0.62 * s,
-          y0 + th * 0.72,
-          0.78 * s,
-          rot + 0.2,
-          `${p.name}_c`,
-          g,
-          g1,
-          g1
-        )
-      );
+      // 下半冠：尖朝下，把树冠底面收成锥形（不然从上往下看是个"平底锅"）
+      out.push(cone(c, cr * 0.74, y0 + th * 0.72, ch * 0.42, `${p.name}_c0`, g, g1, 7, false));
+      // 上半冠：尖朝上
+      out.push(cone(c, cr, y0 + th * 0.72 + ch * 0.16, ch, `${p.name}_c1`, g, g1, 7, true));
       break;
     }
     case 'treeSmall': {
-      const th = 0.3 * s;
+      const th = 0.28 * s;
       const g1 = treeGreen(p.seed);
       out.push(cylinder(c, 0.028 * s, y0, th, `${p.name}_t`, g, MAT.trunk, 3));
-      out.push(...box(c, 0.44 * s, 0.44 * s, y0 + th * 0.7, 0.56 * s, rot, `${p.name}_c`, g, g1, g1));
+      out.push(cone(c, 0.28 * s, y0 + th * 0.7, 0.5 * s, `${p.name}_c0`, g, g1, 6, false));
+      out.push(cone(c, 0.33 * s, y0 + th * 0.7 + 0.12 * s, 0.52 * s, `${p.name}_c1`, g, g1, 6, true));
       break;
     }
     case 'conifer': {
-      // 针叶树用"两层矮一点的方块"，俯视图上比圆叶树小一圈、颜色更冷
-      const th = 0.22 * s;
+      // 针叶树：细高的**单锥**，比圆叶树窄一圈、颜色更冷 —— 俯视投影是小圆，
+      // 在绿地上一眼能和圆叶树分开（原来是两层方块，3D 里是"绿色塔"）
+      const th = 0.2 * s;
       const g1 = treeGreen(p.seed);
       out.push(cylinder(c, 0.026 * s, y0, th, `${p.name}_t`, g, MAT.trunk, 3));
-      out.push(...box(c, 0.5 * s, 0.5 * s, y0 + th * 0.7, 0.62 * s, rot, `${p.name}_c1`, g, g1, g1));
-      out.push(
-        ...box(
-          new Pt(c.x, c.y),
-          0.3 * s,
-          0.3 * s,
-          y0 + th * 0.7 + 0.62 * s,
-          0.42 * s,
-          rot + 0.4,
-          `${p.name}_c2`,
-          g,
-          g1,
-          g1
-        )
-      );
+      out.push(cone(c, 0.44 * s, y0 + th * 0.7, 0.5 * s, `${p.name}_c0`, g, g1, 6, false));
+      out.push(cone(c, 0.28 * s, y0 + th * 0.7 + 0.1 * s, 1.0 * s, `${p.name}_c1`, g, g1, 6, true));
       break;
     }
     case 'lamp':

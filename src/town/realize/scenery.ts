@@ -35,7 +35,9 @@ const PLANTABLE: Record<string, { perM2: number; kinds: PropKind[] }> = {
   // 院子：树不多，但要有 —— 围合式住宅的院子没有树就是一片空地
   courtyard: { perM2: 1 / 260, kinds: ['tree', 'tree', 'treeSmall', 'conifer'] },
   // 绿地：正常密度
-  landscape: { perM2: 1 / 150, kinds: ['tree', 'tree', 'treeSmall', 'treeSmall', 'conifer'] },
+  // 绿地密度降到 1/240：绿地现在会被园路切成小块，1/150 时树冠把园路整个盖住，
+  // "分块"就白做了 —— 俯视图和 3D 上都看不出来。
+  landscape: { perM2: 1 / 240, kinds: ['tree', 'tree', 'treeSmall', 'treeSmall', 'conifer'] },
   landscape_buffer: { perM2: 1 / 110, kinds: ['tree', 'treeSmall', 'conifer', 'conifer'] },
   // 会客场地：稀一点，别挡活动面
   amenity: { perM2: 1 / 320, kinds: ['treeSmall', 'tree', 'conifer'] },
