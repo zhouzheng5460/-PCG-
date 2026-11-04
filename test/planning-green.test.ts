@@ -16,6 +16,7 @@ import { GREEN_PROGRAMS, greenProgramViolations } from '../src/town/planning/typ
 import { PARK_PROGRAMS, parkProgramViolations } from '../src/town/planning/typologies/park';
 import { CIVIC_PROGRAMS, civicProgramViolations } from '../src/town/planning/typologies/civic';
 import { pointInRing } from '../src/town/planning/core/surface';
+import { civicDiagnostics } from '../src/town/planning/typologies/civic';
 
 let fail = 0;
 let n = 0;
@@ -212,6 +213,63 @@ for (const u of USES) {
   ok('Green 不含步道骨架之外的铺装', !g.includes('amenity') && !g.includes('entrance_forecourt'), g);
   ok('Park 有公园特有程序（步道/场地）', p.includes('park_path') || p.includes('amenity'), p);
   ok('Civic 一定有广场', c.includes('entrance_forecourt'), c);
+}
+
+// ---------------------------------------------------------------- ③ 回归：D0
+//
+// 阶段 C 把一个 `main_lobby`（建筑主入口，在建筑正面墙上）加进了 access 列表，
+// 而 civic 的"客货分离"当时是拿 **所有 pedestrian × service 的最小距离** 算的 ——
+// 于是"一栋楼的正门到后门有多远"变成了客货分离度。2834 m² 的小地块上
+// 这个距离只有 25.5 m，30 m 门槛判负，score 9.19 → 7.44。
+//
+// 下面四条把它钉住：口径只量街道侧开口，且以"是否同一条临街面"为主判据。
+{
+  const cs = CASES[4]; // 多等级道路 50×44
+  const ctx = ctxOf(cs.parcel, cs.edges, 'civic');
+  const cands = generateCandidates(ctx);
+  ok('D0 有 civic 候选', cands.length > 0);
+  if (cands.length > 0) {
+    const c = cands[0];
+    const base = civicDiagnostics(ctx, c);
+    // 人为插一个 main_lobby（模拟阶段 C 的做法）
+    const withLobby = {
+      ...c,
+      access: [
+        ...c.access,
+        {
+          kind: 'pedestrian' as const,
+          at: c.buildings[0].footprint.outer[0],
+          normal: new Pt(1, 0),
+          role: 'main_lobby' as const,
+          frontage: 'primary' as const,
+        },
+      ],
+    };
+    const after = civicDiagnostics(ctx, withLobby);
+    ok(
+      'D0 加 main_lobby 不改变客货分离度',
+      Math.abs((after.serviceSeparation ?? 0) - (base.serviceSeparation ?? 0)) < 1e-9,
+      `${base.serviceSeparation} → ${after.serviceSeparation}`
+    );
+    ok(
+      'D0 加 main_lobby 不改变总分',
+      Math.abs((after.accessConflictPenalty ?? 0) - (base.accessConflictPenalty ?? 0)) < 1e-9,
+      `${base.accessConflictPenalty} → ${after.accessConflictPenalty}`
+    );
+    // 服务口挪到人流口同一条临街面上 → 必须重罚
+    const sameFrontage = {
+      ...c,
+      access: c.access.map((a) =>
+        a.kind === 'service' ? { ...a, frontage: 'primary' as const } : a
+      ),
+    };
+    const penalized = civicDiagnostics(ctx, sameFrontage);
+    ok(
+      'D0 服务口与人流口同街时分离度 ≤0.5',
+      (penalized.serviceSeparation ?? 1) <= 0.5 + 1e-9,
+      `${penalized.serviceSeparation}`
+    );
+  }
 }
 
 console.log(fail === 0 ? `\n# PASS — ${n} 项断言，0 项失败` : `\n# FAIL — ${n} 项断言，${fail} 项失败`);

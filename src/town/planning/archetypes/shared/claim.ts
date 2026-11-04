@@ -1,6 +1,6 @@
 import type { SiteContext } from '../../core/types';
 import type { GroundProgram, PlannedRegion, SitePlanCandidate } from '../../core/candidate';
-import { type PlanSurface, surfaceArea, surfaceSubtract } from '../../core/surface';
+import { type PlanSurface, surfaceArea, surfaceSubtract, geometryFailures } from '../../core/surface';
 
 /**
  * 残地认领（R8 Visual Review）。
@@ -29,6 +29,9 @@ export const RESIDUAL_CLAIM = {
 };
 
 /** typology → 无主大块该变成什么绿地 program */
+export const SETBACK_PROGRAM: Partial<Record<string, GroundProgram>> = {
+  industrial: 'landscape_buffer',
+};
 const GREEN_PROGRAM: Partial<Record<string, GroundProgram>> = {
   industrial: 'landscape_buffer',
   retail: 'landscape',
@@ -97,4 +100,50 @@ export function unclaimedShare(ctx: SiteContext, c: SitePlanCandidate): number {
   const used = [...c.ground.map((g) => g.surface), ...c.buildings.map((b) => b.footprint)];
   const rest = surfaceSubtract([ctx.buildableArea], used);
   return rest.reduce((s, p) => s + surfaceArea(p), 0) / Math.max(1e-6, surfaceArea(ctx.buildableArea));
+}
+
+/**
+ * 认领**红线退线带**：`parcel − buildableArea`。
+ *
+ * ## 为什么必须认领
+ *
+ * 全城审计（D1，0.5 单位采样）发现 **17.4% 的城内面积只有底板、没有任何功能面**。
+ * 其中最大的一块就是这条带子：地块是按"每条边各自的退线"内缩出可建区的，
+ * 而 archetype 只往可建区里铺东西 —— 可建区和红线之间那一圈（路口转角处更宽）
+ * 从头到尾没人管。底板按用途上色之后它"看起来像绿化"，但语义上是空的：
+ * 既不是道路，也不是绿地，也不是保留地。
+ *
+ * 这条带子在真实总图上有明确身份：**红线内的绿化/铺装退线**。
+ * 所以在 Candidate 出口统一认领成 typology 对应的绿地 program。
+ *
+ * 上限 45%：超过说明这个地块的退线比可建区还大（畸形片），那种情况认领了
+ * 也只是把一块畸形面刷上颜色，不如留着让审计看见。
+ */
+export function claimSetback(
+  ctx: SiteContext,
+  typology: string,
+  add: (program: PlannedRegion['program'], s: PlanSurface | null, note?: string) => void
+): { pieces: number; area: number } {
+  const parcelA = surfaceArea(ctx.parcel);
+  const buildA = surfaceArea(ctx.buildableArea);
+  if (parcelA < 1e-6) return { pieces: 0, area: 0 };
+  const fail0 = geometryFailures.subtract;
+  const raw = surfaceSubtract([ctx.parcel], [ctx.buildableArea]);
+  if (geometryFailures.subtract > fail0) return { pieces: 0, area: 0 };
+  // `surfaceSubtract` 失败时会**原样返回被减数**（返回整个 parcel）。那种情况下
+  // 认领出来的"退线带"其实是整块地，会跟所有功能面重叠 —— 审计里表现为
+  // "重叠率从 5% 涨到 39%"。所以这里必须挡一道：返回块有任何一个 ≥ 95% parcel
+  // 就整体放弃。
+  const ring = raw.filter((p) => surfaceArea(p) > 0.6 && surfaceArea(p) < parcelA * 0.95);
+  if (!ring.length) return { pieces: 0, area: 0 };
+  const area = ring.reduce((a, p) => a + surfaceArea(p), 0);
+  if (area > parcelA * 0.45) return { pieces: 0, area: 0 };
+  const prog = SETBACK_PROGRAM[typology] ?? 'landscape';
+  let n = 0;
+  for (const p of ring) {
+    add(prog, p, '红线退线带（绿化/铺装退线）');
+    n++;
+  }
+  void buildA;
+  return { pieces: n, area };
 }

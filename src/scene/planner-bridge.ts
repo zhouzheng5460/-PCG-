@@ -180,6 +180,10 @@ export function buildPlannerBundle(model: Model, net: RoadNet, mode: PlanningMod
       solveParking: true,
       // typology 决定建筑外观（住宅暖色 / 商业幕墙 / 工业面板）
       typology: ctx.typology,
+      // 红线 + 可建区：Realizer 用它们铺"红线退线带"（见 realizeGround 注释）
+      parcel: ctx.parcel,
+      buildable: ctx.buildableArea,
+      setbackProgram: ctx.typology === 'industrial' ? 'landscape_buffer' : 'landscape',
     });
 
     const feats: PlannerParcelFeatures = {

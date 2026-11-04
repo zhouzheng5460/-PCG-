@@ -10,7 +10,7 @@
 import { Pt } from '../../core/geom';
 import type { SurfaceFeature, SolidFeature, PathFeature } from '../../scene/types';
 import type { SitePlanCandidate } from '../planning/core/candidate';
-import { surfaceArea, surfaceSubtract, surfaceIntersect, type PlanSurface } from '../planning/core/surface';
+import { surfaceArea, surfaceSubtract, surfaceIntersect, geometryFailures, type PlanSurface } from '../planning/core/surface';
 import { resolveGroundOwnership } from './ground-ownership';
 import { subdivideGreen } from '../greenspace';
 import {
@@ -67,6 +67,33 @@ export function realizeGround(
           return rest;
         })
       : owned.regions;
+
+  // 红线退线带：红线以内、可建区以外那一圈。
+  //
+  // 不铺的话这一圈在场景里只有底板色 —— 全城审计（D1）实测它占城内面积 8.4%，
+  // 是最大的一块"有颜色但没有功能语义"的区域。它在真实总图上有明确身份
+  // （红线内的绿化/铺装退线），所以在这里补一层**功能面**，而不是靠底板遮。
+  if (ctx.parcel && ctx.buildable) {
+    const fail0 = geometryFailures.subtract;
+    const outside = surfaceSubtract([ctx.parcel], [ctx.buildable]);
+    if (geometryFailures.subtract === fail0) {
+      const parcelA = surfaceArea(ctx.parcel);
+      let k = 0;
+      for (const p of outside) {
+        const a = surfaceArea(p);
+        // 面积 ≥ 95% parcel = 布尔退化成了"原样返回"，宁可不铺
+        if (a < 0.6 || a > parcelA * 0.95) continue;
+        part.surfaces.push({
+          name: `${c.id}_setback_${k++}`,
+          group: ctx.group,
+          ring: p.outer,
+          mat: GROUND_MATERIAL[ctx.setbackProgram ?? 'landscape'] ?? 'grass',
+          y: base - 0.0002,
+          ...(p.holes.length > 0 ? { holes: p.holes } : {}),
+        });
+      }
+    }
+  }
 
   pieces.forEach((g, i) => {
     // 大块绿地做**分块规划**：园路把它切成 20~40 m 的块（草坪 / 草甸 / 密林）。

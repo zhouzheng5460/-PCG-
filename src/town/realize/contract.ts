@@ -78,6 +78,18 @@ export interface RealizationContext {
   scenery?: boolean;
   /** 地块用途（用来区分不同 typology 的建筑外观：住宅暖色、商业幕墙…） */
   typology?: string;
+  /**
+   * 地块红线（可选）。给了就把**红线退线带**（parcel − buildableArea）也铺出来。
+   *
+   * 为什么放在 Realizer 而不是 Planner：这条带子是"红线以内、可建区以外"的那一圈，
+   * 规划决策（可建区）已经做完了，剩下的只是**把它标明归属** —— 属于落地表达，
+   * 不属于方案。放进 Candidate 会污染所有按可建区算比例的诊断。
+   */
+  parcel?: import('../planning/core/surface').PlanSurface;
+  /** 可建区（可选）。与 parcel 一起给，才能算出"红线退线带"。 */
+  buildable?: import('../planning/core/surface').PlanSurface;
+  /** 退线带铺成什么 program（默认 landscape） */
+  setbackProgram?: import('../planning/core/candidate').GroundProgram;
 }
 
 /** Ground Program → 材质（R1 的唯一映射表，场景代码里不许再散落 if/else） */
