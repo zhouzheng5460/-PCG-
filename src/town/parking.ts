@@ -129,6 +129,12 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
       if (k > 0 && k % ISLAND_EVERY === 0 && u + ISLAND_W + w <= u1 + 1e-6) {
         islandUs.push(u);
         u += ISLAND_W;
+        // **k 必须跟着走**。原来这里直接 continue、k 原地不动，于是
+        // `k % 6 === 0` 永远成立 —— 一条车位排摆到第 6 个位之后，剩下的
+        // 整排全被树池吃掉：实测一个 9889 m² 的停车区只有 50 个车位、
+        // 却长出 363 条树池（占场地 44%），俯视图上看就是"绿灰相间的条纹"，
+        // 读不出是停车场。车位排的循环必须靠 k 前进才会继续摆车位。
+        k++;
         continue;
       }
       cols.push(u);

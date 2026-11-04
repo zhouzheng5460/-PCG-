@@ -12,6 +12,7 @@ import type { SurfaceFeature, SolidFeature, PathFeature } from '../../scene/type
 import type { SitePlanCandidate } from '../planning/core/candidate';
 import { surfaceArea, surfaceSubtract, surfaceIntersect, type PlanSurface } from '../planning/core/surface';
 import { resolveGroundOwnership } from './ground-ownership';
+import { subdivideGreen } from '../greenspace';
 import {
   GROUND_MATERIAL,
   GROUND_LIFT,
@@ -68,6 +69,33 @@ export function realizeGround(
       : owned.regions;
 
   pieces.forEach((g, i) => {
+    // 大块绿地做**分块规划**：园路把它切成 20~40 m 的块（草坪 / 草甸 / 密林）。
+    // 整片刷一个 grassDark 是"没有规划"的读法 —— 详见 landscape.ts。
+    const green = subdivideGreen(g.surface, g.program);
+    if (green) {
+      const lift = GROUND_LIFT[g.program] ?? 0;
+      green.paths.forEach((s, k) => {
+        part.surfaces.push({
+          name: `${c.id}_${g.program}_${i}_path_${k}`,
+          group: ctx.group,
+          ring: s.outer,
+          mat: 'gravel',
+          y: base + lift + 0.0002,
+          ...(s.holes.length > 0 ? { holes: s.holes } : {}),
+        });
+      });
+      green.plots.forEach((p, k) => {
+        part.surfaces.push({
+          name: `${c.id}_${g.program}_${i}_${p.kind}_${k}`,
+          group: ctx.group,
+          ring: p.surface.outer,
+          mat: p.mat,
+          y: base + lift + 0.0004,
+          ...(p.surface.holes.length > 0 ? { holes: p.surface.holes } : {}),
+        });
+      });
+      return;
+    }
     const mat = GROUND_MATERIAL[g.program] ?? 'gravel';
     part.surfaces.push({
       name: `${c.id}_${g.program}_${i}`,

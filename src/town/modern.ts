@@ -28,6 +28,8 @@ import type { MatKey } from '../scene/palette';
 import { u } from '../road/spec';
 import { RAIL_PARK, addHedgeRun, addRail } from './rails';
 import type { RailSpec } from './rails';
+import { subdivideGreen } from './greenspace';
+import { surface as planSurface } from './planning/core/surface';
 import type { ParcelPattern } from './params';
 import { fbm } from '../core/noise';
 import { type Family, type FieldSource, TensorField } from './field/tensor';
@@ -779,6 +781,18 @@ function orphanGround(c: Ctx) {
   const rest = subtract(patch, [block]);
   for (const p of rest) {
     if (p.length < 3 || Math.abs(area(p)) < 1.2) continue;
+    // 大片残地不整片刷一个底色：切成块 + 园路（和 Planner 地块同一套读法）。
+    // 城市外圈那些整块的大草地就是从这里来的，不切的话俯视图上是一整片纯绿。
+    const green = subdivideGreen(planSurface(p), 'landscape');
+    if (green) {
+      for (const [k, s] of green.paths.entries()) {
+        addSurface(c, `orphan_ground_c${k}`, s.outer as Pt[], 'gravel', 0.0055, false, false, s.holes as Pt[][]);
+      }
+      for (const [k, s] of green.plots.entries()) {
+        addSurface(c, `orphan_ground_c${k}`, s.surface.outer as Pt[], s.mat, 0.0057, false, false, s.surface.holes as Pt[][]);
+      }
+      continue;
+    }
     addSurface(c, 'orphan_ground', p, c.baseMat, 0.0055, false);
   }
 }
@@ -833,6 +847,20 @@ function serviceYard(c: Ctx): Pt[] | null {
 function baseSurface(c: Ctx, mat: MatKey) {
   // base 本身就是可建区，已经规范化过，不需要再裁
   c.baseMat = mat;
+  // 绿地基底不整片刷：公园 / 林地 / 低密度住宅的基底动辄上万平米，
+  // 一整块纯色就是用户说的"大片绿地没有分块规划"。切成块 + 园路。
+  if (mat === 'grass' || mat === 'grassDark' || mat === 'lawn') {
+    const green = subdivideGreen(planSurface(Array.from(c.block)), 'landscape');
+    if (green) {
+      for (const [k, s] of green.paths.entries()) {
+        addSurface(c, `base_c${k}`, s.outer as Pt[], 'gravel', 0.006, false, false, s.holes as Pt[][]);
+      }
+      for (const [k, s] of green.plots.entries()) {
+        addSurface(c, `base_c${k}`, s.surface.outer as Pt[], s.mat, 0.0062, false, false, s.surface.holes as Pt[][]);
+      }
+      return;
+    }
+  }
   addSurface(c, 'base', Array.from(c.block), mat, 0.006, false);
 }
 

@@ -316,7 +316,10 @@ export function surfaceIntersect(a: PlanSurface[], b: PlanSurface[]): PlanSurfac
 export function chamferCorners(
   ring: ReadonlyArray<{ x: number; y: number }>,
   d: number,
-  minEdge = d * 2.5
+  // 默认 minEdge 只要求"两边都够放下切点"，不额外放大 ——
+  // 原来写 d*2.5（3.5 m 倒角就是 8.75 m），短边交汇的角全被跳过，
+  // 实测 52 块地里只有 37 块切到，用户在图上看到的就是"有的角切了有的没切"。
+  minEdge = d * 1.2
 ): Pt[] {
   const n = ring.length;
   if (n < 3 || d <= 1e-9) return ring.map((p) => new Pt(p.x, p.y));
