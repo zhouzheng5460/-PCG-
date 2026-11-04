@@ -1235,6 +1235,39 @@ export function cornerPaving(
   if (!beyond(c.x, a.dir) || !beyond(c.x, b.dir)) return null;
 
   const inner = c.r > 1e-4 ? arcPts(c.o, c.ta, c.tb, ARC_SEGS) : [c.x];
+
+  // ---- 外边界也走弧（人行道在转角处应当是**圆角**，不是斜切）----
+  //
+  // 旧实现的外边界是"两条垂足 + 红线交点"的折线（A.pL → B.pR → bOut → xo → aOut），
+  // 于是人行道外侧看起来是一道斜切。原因写在下面的历史注释里：
+  // 当年 r 只有 2.4 m、铺装带 3 m，r < w，把弧按 r+w 外推时外推点会**跨过圆心**
+  // 落到另一侧，整片铺装翻面成蝴蝶结，所以只能退回避开外推。
+  //
+  // 现在转角半径做到 6~14 m（见 cornerOf 的收口重算），r > w 已经是常态，
+  // 外推不再翻面。做法：同心弧，半径 = r + 铺装带宽，然后**裁到"街角块"**
+  //（A.pL → B.pR → bOut → xo → aOut）—— 超红线的那一段自然被切掉，
+  // 弧在红线内的部分保留。
+  if (c.r > 1e-4) {
+    const wOut = Math.max(wA, wB);
+    const rOut = c.r + wOut;
+    const lenA = Pt.distance(c.o, A.pL);
+    const lenB = Pt.distance(c.o, B.pR);
+    if (lenA > 1e-6 && lenB > 1e-6 && rOut > 1e-6) {
+      const outerA = new Pt(c.o.x + ((A.pL.x - c.o.x) / lenA) * rOut, c.o.y + ((A.pL.y - c.o.y) / lenA) * rOut);
+      const outerB = new Pt(c.o.x + ((B.pR.x - c.o.x) / lenB) * rOut, c.o.y + ((B.pR.y - c.o.y) / lenB) * rOut);
+      const outer = arcPts(c.o, outerA, outerB, ARC_SEGS).reverse();
+      const arcRing = dedupeRing([A.pL, ...inner, B.pR, ...outer]);
+      // 裁到街角块（红线多边形）
+      const clip = dedupeRing([A.pL, B.pR, bOut, xo, aOut]);
+      if (arcRing.length >= 3 && clip.length >= 3) {
+        const clipped = clipRingTo(arcRing, clip);
+        if (clipped && clipped.length >= 3 && Math.abs(signedArea(clipped)) > 1e-7 && isSimpleRing(clipped)) {
+          return clipped;
+        }
+      }
+    }
+  }
+
   const ring = dedupeRing([A.pL, ...inner, B.pR, bOut, xo, aOut]);
   if (ring.length >= 3 && Math.abs(signedArea(ring)) > 1e-7 && isSimpleRing(ring)) return ring;
 
@@ -1246,6 +1279,29 @@ export function cornerPaving(
   if (Math.abs(signedArea(flat)) < 1e-7) return null;
   if (!isSimpleRing(flat)) return null;
   return flat;
+}
+
+/** 用 clip 环去裁 source 环（取面积最大的那一块） */
+function clipRingTo(source: Pt[], clip: Pt[]): Pt[] | null {
+  try {
+    const a = [[source.map((p) => [p.x, p.y])]] as never;
+    const b = [[clip.map((p) => [p.x, p.y])]] as never;
+    const out = polygonClipping.intersection(a, b) as unknown as number[][][][];
+    if (!out || out.length === 0) return null;
+    let best: Pt[] | null = null;
+    let bestA = 0;
+    for (const poly of out) {
+      const ring = (poly[0] ?? []).map((q) => new Pt(q[0], q[1]));
+      const ar = Math.abs(signedArea(ring));
+      if (ar > bestA) {
+        bestA = ar;
+        best = ring;
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
 }
 
 /**
