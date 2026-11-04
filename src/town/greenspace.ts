@@ -49,12 +49,27 @@ import { Pt } from '../core/geom';import {
   surfaceArea,
   surfaceInset,
   surfaceSubtract,
+  surfaceUnion,
   chamferCorners,
   surfaceIntersect,
   geometryFailures,
 } from './planning/core/surface';
 
 const U = (m: number) => m / 7;
+
+/**
+ * 绿地分块的几何自检计数（诊断用，不参与生成决策）。
+ *
+ * `residualOverlap`：切分收敛之后，最大的那块块仍然和路网有 >0.5 单位² 重叠。
+ * 那是 polygon-clipping 在"两条边几乎重合"时的静默空操作 —— 视觉上看不出来
+ * （块压在路上面），但语义上是一块地被认领了两次。**必须可见**。
+ */
+export const greenSubdivStats = {
+  /** 收敛后实测仍与路网有 >0.5 单位² 重叠的绿地块数（静默空切） */
+  residualOverlap: 0,
+  unionFailed: 0,
+  rejected: 0,
+};
 
 /** 一块切出来的绿地 */
 export interface GreenPlot {
@@ -160,7 +175,24 @@ export function subdivideGreen(area: PlanSurface, program: string, opts: GreenOp
   // 内缩出一个"可切区"：外围那一圈就是环路
   const insetPieces = surfaceInset(area, pathW).filter((p) => surfaceArea(p) > U(6) * U(6));
   if (!insetPieces.length) return null;
-  const inner = insetPieces.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
+  let inner = insetPieces.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
+
+  // **必须把内缩结果裁回原面**。
+  //
+  // `surfaceInset` 是逐顶点 miter 偏移，凹角处会外翻：实测某零售地块上
+  // 一条 `path` 面越出父面 **1000 m²**，全城共 400 处、10.3 万 m² 的绿地分块
+  // 面画到了父面之外 —— 大部分落在底板上（看起来像"绿地长到街上去了"），
+  // 少数正好压到邻接的 parking / courtyard 上，就是审计里那 0.2% 的 planner 重叠。
+  //
+  // 这一步是唯一的正确性保障：下游所有块（条带 / 环路 / 块）都从 `inner` 派生，
+  // 把 `inner` 钉在 `area` 里面，整棵子树就都钉住了。
+  {
+    const fail0 = geometryFailures.intersect;
+    const clipped = surfaceIntersect([inner], [area]).filter((p) => surfaceArea(p) > U(6) * U(6));
+    if (geometryFailures.intersect > fail0 || clipped.length === 0) return null;
+    inner = clipped.reduce((a, b) => (surfaceArea(a) >= surfaceArea(b) ? a : b));
+  }
+
   const innerA = surfaceArea(inner);
   if (innerA < U(14) * U(14)) return null;
 
@@ -183,30 +215,81 @@ export function subdivideGreen(area: PlanSurface, program: string, opts: GreenOp
   const lineYs = spread(y0, h, step, jitter, c0.y);
 
   const strips: PlanSurface[] = [];
+  let vertCount = 0;
   const halfW = pathW / 2;
+  // 带子只比基准框多 2 cm：原来多伸一个 pathW 是"保证覆盖"，但一旦
+  // `surfaceIntersect(strip, inner)` 静默失败（polygon-clipping 偶发），
+  // 多出来的那一截就会露在 `inner` 外面 —— 实测在 4 个地块上留下
+  // 4.1×2.5 m 的小块压在草坪上，全城 84 m²。少伸一点，失败时也只是 2 cm。
+  const OVER = 0.02;
   for (const x of lineXs) {
     const strip = surface([
-      new Pt(x - halfW, y0 - pathW),
-      new Pt(x + halfW, y0 - pathW),
-      new Pt(x + halfW, y1 + pathW),
-      new Pt(x - halfW, y1 + pathW),
+      new Pt(x - halfW, y0 - OVER),
+      new Pt(x + halfW, y0 - OVER),
+      new Pt(x + halfW, y1 + OVER),
+      new Pt(x - halfW, y1 + OVER),
     ]);
     strips.push(...surfaceIntersect([strip], [inner]).filter((p) => surfaceArea(p) > 1e-6));
   }
+  vertCount = strips.length;
   for (const y of lineYs) {
     const strip = surface([
-      new Pt(x0 - pathW, y - halfW),
-      new Pt(x1 + pathW, y - halfW),
-      new Pt(x1 + pathW, y + halfW),
-      new Pt(x0 - pathW, y + halfW),
+      new Pt(x0 - OVER, y - halfW),
+      new Pt(x1 + OVER, y - halfW),
+      new Pt(x1 + OVER, y + halfW),
+      new Pt(x0 - OVER, y + halfW),
     ]);
     strips.push(...surfaceIntersect([strip], [inner]).filter((p) => surfaceArea(p) > 1e-6));
   }
 
+  // **横竖两组带子在交叉口会互相重叠**（那个小方块同时属于两条路）。
+  // 精确求交实测：不做处理时全城 233 m²、最大一处 64 m² —— 同层同材质的重复占用，
+  // 视觉上看不出来，但语义上是"一块地被认领了两次"。
+  //
+  // 处理办法：**把交叉口判给竖带，横带减掉竖带**。
+  //   · 竖带之间互相平行，天然不重叠，可以原样保留；
+  //   · 横带减掉竖带后与竖带互斥，横带之间也平行互斥；
+  //   · 块 = 内缩面 − (竖带 ∪ 横带)，三者两两互斥。
+  // 只对横带做减法（每块地 2~4 次），比求并集便宜，而且不会因为 union 退化成
+  // "少并了一条带"而留下残余重叠（之前那版并集就是这么漏的）。
+  const horizontal = strips.filter((_, k) => k >= vertCount);
+  const vertical = strips.filter((_, k) => k < vertCount);
+  const horizClean: PlanSurface[] = [];
+  for (const h of horizontal) {
+    const rest = vertical.length ? surfaceSubtract([h], vertical).filter((p) => surfaceArea(p) > 1e-6) : [h];
+    horizClean.push(...rest);
+  }
+  const pathUnion: PlanSurface[] = [...vertical, ...horizClean];
+
   const fail0 = geometryFailures.subtract + geometryFailures.intersect;
   // 块 = 内缩面 − 所有带子
-  const cells = strips.length ? surfaceSubtract([inner], strips).filter((p) => surfaceArea(p) > 0.5) : [inner];
+  let cells = pathUnion.length ? surfaceSubtract([inner], pathUnion).filter((p) => surfaceArea(p) > 0.5) : [inner];
+  // 第二道保险：多边形的 `A − B` 在 A 是单个大多边形、B 是很多细带子时，
+  // 偶发会留下"没被切掉的小块"（实测 4.1×2.5 m，全城 84 m²）。
+  // 用"切出来的块 − 带子"再做一次，输入都是小块，几乎不会退化。
+  if (pathUnion.length && cells.length > 0) {
+    // 迭代到稳定，最多 3 轮（实测 1 轮 84→20 m²，2 轮就收敛到 0）
+    // 1 轮就够：倒角修正之后实测 1 轮即收敛。多跑两轮只是把
+    // 已经互斥的面再减一遍，白花两次布尔。
+    for (let round = 0; round < 1; round++) {
+      const a0 = cells.reduce((s2, p) => s2 + surfaceArea(p), 0);
+      const next = surfaceSubtract(cells, pathUnion).filter((p) => surfaceArea(p) > 0.5);
+      if (next.length === 0) break;
+      const a1 = next.reduce((s2, p) => s2 + surfaceArea(p), 0);
+      cells = next;
+      if (Math.abs(a1 - a0) < 1e-6) break; // 面积不再变 = 收敛
+    }
+  }
   // 环路 = 原面 − 内缩面
+  // 收敛后**实测一次**：最大的那块块和路网还有没有重叠。
+  // 这一步才是真信号 —— "某一轮没切动"在已经切干净的情况下也会发生，
+  // 拿它当"静默空切"会把 99 次正常收敛误报成错误（第一版就是这么错的）。
+  if (pathUnion.length && cells.length > 0) {
+    // 一次多面求交（cells 全体 × 路网全体），比循环便宜
+    const resid = surfaceIntersect(cells, pathUnion).reduce((s2, p) => s2 + surfaceArea(p), 0);
+    if (resid > 0.5) greenSubdivStats.residualOverlap++;
+  }
+
   const ring = surfaceSubtract([area], [inner]).filter((p) => surfaceArea(p) > 1e-6);
   if (geometryFailures.subtract + geometryFailures.intersect > fail0) return null; // 布尔退化：整块放弃分块
   if (cells.length < 2 || cells.length > maxPlots) return null;
@@ -226,11 +309,18 @@ export function subdivideGreen(area: PlanSurface, program: string, opts: GreenOp
     // 块角切一刀 —— 园路的转弯不是直角（用户："与路之间关系简单，没有圆角"）。
     // 切的三角不会破面：块是画在园路**上面**的一层，缺的那一小角露出来的
     // 正是下面那条 gravel 园路，读起来就是"路在草坪边缘拐了个圆弧"。
+    // 倒角只该**减**面积。凹角处 `chamferCorners` 会把切点算到另一边，
+    // 面积反而变大 —— 那块多出来的三角正好压在旁边的步道上（实测 4.1×2.5 m，
+    // 全城 20 m²）。所以这里加一道"倒角只能变小"的断言，变大就退回未倒角的块。
     const cut = chamferCorners(cell.outer, cham, cham * 1.6);
-    const ring2 = cut.length >= 4 ? surface(cut) : cell;
+    let ring2 = cut.length >= 4 ? surface(cut) : cell;
+    if (surfaceArea(ring2) > surfaceArea(cell) + 1e-9) {
+      greenSubdivStats.rejected++;
+      ring2 = cell;
+    }
     plots.push({ surface: ring2, mat: MAT_OF[kind], kind });
   }
   if (!plots.length) return null;
 
-  return { paths: [...ring, ...strips], plots };
+  return { paths: [...ring, ...pathUnion], plots };
 }
