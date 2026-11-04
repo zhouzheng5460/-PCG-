@@ -134,54 +134,10 @@ export function realizeScenery(
     }
   }
 
-  // ---- 停车场树岛 ----
-  //
-  // 停车场原先一棵树都不长（"车位上不长树"），于是一个 5000 m² 的地面停车场
-  // 就是一大片纯灰 —— 用户说的"大片停车场"就是这个观感。
-  // 真实停车场是**每 4~6 个车位一组、组间有树岛**的，加上树岛之后
-  // 灰面被打散成"带绿化的停车场"，比单纯灰面耐看得多。
-  //
-  // 密度取每 ~140 m² 一棵（约 5 个车位一棵），明显低于绿地，
-  // 所以不会读成"车停在树林里"。
-  for (const g of c.ground) {
-    if (g.program !== 'parking' && g.program !== 'employee_parking') continue;
-    const areaM2 = surfaceArea(g.surface) * 49;
-    if (areaM2 < 500) continue; // 小车场不值得打散
-    const n = Math.max(1, Math.round(areaM2 / 140));
-    const ring = g.surface.outer;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const p of ring) {
-      if (p.x < minX) minX = p.x;
-      if (p.x > maxX) maxX = p.x;
-      if (p.y < minY) minY = p.y;
-      if (p.y > maxY) maxY = p.y;
-    }
-    const cell = Math.sqrt(areaM2 / n / 49);
-    const rand = rng(hashSeed(`${c.id}:parkisland:${count}`));
-    // 只避建筑 —— 停车场自身当然不避
-    const blds = c.buildings.map((b) => b.footprint.outer);
-    for (let y = minY; y <= maxY; y += cell) {
-      for (let x = minX; x <= maxX; x += cell) {
-        const p = new Pt(x + (rand() - 0.5) * cell * 0.5, y + (rand() - 0.5) * cell * 0.5);
-        if (!pointInRing(p, ring)) continue;
-        if (blds.some((r) => pointInRing(p, r))) continue;
-        part.props.push({
-          name: `${c.id}_island_${count}`,
-          group,
-          kind: rand() < 0.5 ? 'treeSmall' : 'tree',
-          at: p,
-          rot: rand() * Math.PI * 2,
-          // 树岛上的树小一号：不挡车位视线
-          scale: 0.6 + rand() * 0.25,
-          seed: rand(),
-        });
-        count++;
-      }
-    }
-  }
+  // 停车场的树岛**不在这里撒** —— 现在由 `realizeParking` 按车位排的真实位置种
+  //（每个车位的布局只有 Solver 知道，scenery 只能瞎猜位置）。
+  // 见 realize/parking.ts 的 `layout.islands`。
+
   return count;
 }
 

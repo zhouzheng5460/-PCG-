@@ -38,6 +38,14 @@ export interface ParkLayout {
   fronts: [Pt, Pt][];
   /** 通道多边形（已裁到场地内） */
   aisles: Pt[][];
+  /**
+   * 树岛：车位排内部每 6 个车位一条 1.5 m 的树池带。
+   *
+   * 只占车位排、**不穿通道**（树不能长在车道上）。这是真实停车场的做法：
+   * 每 4~6 个车位一组、组间有树池，读起来是"有绿化的停车场"而不是一片纯灰。
+   * 代价是每 6 个车位让出 1.5 m（约 9% 的车位），换来整个场地的观感。
+   */
+  islands: Pt[][];
   count: number;
   /** 通道占场地面积的比例，做"是否像停车场"的判据 */
   aisleRatio: number;
@@ -108,9 +116,35 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
 
   const world = (u: number, vv: number) => new Pt(ux.x * u + uy.x * vv, ux.y * u + uy.y * vv);
 
-  // 沿 u 方向按车位宽切列
+  // 沿 u 方向按车位宽切列，**每 6 个车位插一条 1.5 m 树池**
+  const ISLAND_EVERY = 6;
+  const ISLAND_W = 1.5 / 7; // 1.5 m → 世界单位（本文件没有全局 U，直接算）
   const cols: number[] = [];
-  for (let u = u0; u + w <= u1 + 1e-6; u += w) cols.push(u);
+  /** 树岛在 u 方向的位置（每个位置跨越整排车位） */
+  const islandUs: number[] = [];
+  {
+    let u = u0;
+    let k = 0;
+    while (u + w <= u1 + 1e-6) {
+      if (k > 0 && k % ISLAND_EVERY === 0 && u + ISLAND_W + w <= u1 + 1e-6) {
+        islandUs.push(u);
+        u += ISLAND_W;
+        continue;
+      }
+      cols.push(u);
+      u += w;
+      k++;
+    }
+  }
+
+  const islands: Pt[][] = [];
+  const emitIslands = (vBase: number) => {
+    for (const u of islandUs) {
+      const quad = [new Pt(u, vBase), new Pt(u + ISLAND_W, vBase), new Pt(u + ISLAND_W, vBase + l), new Pt(u, vBase + l)];
+      if (!quad.every((p) => inside(p, ring2, box))) continue;
+      islands.push(quad.map((q) => world(q.x, q.y)));
+    }
+  };
 
   const emitRow = (vBase: number, front: 'low' | 'high') => {
     for (const u of cols) {
@@ -139,8 +173,10 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
     const remaining = vTop - v;
     if (remaining >= pitch) {
       emitRow(v, 'high');
+      emitIslands(v);
       emitAisle(v + l);
       emitRow(v + l + aisle, 'low');
+      emitIslands(v + l + aisle);
       v += pitch;
     } else if (remaining >= l + aisle + 0.4) {
       // 只够一排 + 通道
@@ -163,6 +199,7 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
     aisles,
     count: dividers.length,
     aisleRatio: lawnArea > 0 ? aisleArea / lawnArea : 0,
+    islands,
   };
 }
 
