@@ -118,8 +118,8 @@ export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
   // 车位格子浅（大面积硬地，视觉上往后退），车行道深（图的"骨"）。
   // 早先车位用 asphaltLot(0.268)、通道用 asphalt(0.243)，差 0.025，
   // 俯视图上完全分不开，整个停车场读成一片灰。
-  parking: 'concrete',
-  parking_aisle: 'asphalt',
+  parking: 'asphaltLot',
+  parking_aisle: 'curb',
   parking_island: 'grass',
   landscape: 'grassDark',
   service: 'asphalt',

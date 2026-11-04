@@ -190,12 +190,12 @@ export function realizeParkingRequests(
       name: `${c.id}_parkreq_${r.role}_${i}`,
       group: ctx.group,
       ring: r.region.outer,
-      // 停车请求面走**车位色**（浅灰），和 ground 的 `parking` 底色一致。
-      // 它是 Solver 的输入区，铺出来只是"这块地要停车"的底；
-      // 通道 / 树岛 / 车位线由 realizeParking 叠在上面。
-      // 之前这里用 asphaltLot（深灰）而 parking 底色用浅灰，结果深灰把浅灰盖住 ——
-      // 整个停车场读成一片深灰，改哪边材质都看不出来。
-      mat: 'concrete',
+      // 停车请求面 = **车位底**（深灰沥青），通道 / 模块步道 / 树岛叠在上面。
+      //
+      // 读法按用户给的参考图：车位是深的、通道是浅的，白线画在深底上才跳得出来。
+      // 早先"浅车位 + 深通道"是照总图（纸面）的读法，但那是**黑白线稿**的规矩；
+      // 在 3D 和带底色的平面图里，浅底 + 白线等于什么都没有 —— 整片场地糊成一块。
+      mat: 'asphaltLot',
       y: base + 0.0005,
       ...(r.region.holes.length > 0 ? { holes: r.region.holes } : {}),
     });

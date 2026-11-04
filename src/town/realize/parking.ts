@@ -122,16 +122,17 @@ export function realizeParking(
     // 之前通道"不单独成面"（为了避开重叠统计），整片 parking 一片灰。
     // 现在把它们作为**细节层**输出（和 road / parkreq 同一个惯例），
     // 铺在车位底色之上、用 y 偏移分层：
-    //   parking     asphaltLot（浅）
-    //   parking_aisle asphalt（深一档）
+    //   parking      asphaltLot（深，车位底）
+    //   parking_aisle curb（浅，通道）
     //   parking_island grass（绿）
+    // 车位深、通道浅 —— 白线画在深底上才看得见（用户参考图的读法）。
     // 细节层不参与"地面独占性"统计（测试里按名字前缀排除）。
     for (const [k, a] of layout.aisles.entries()) {
       part.surfaces.push({
         name: `${c.id}_pk_aisle_${i}_${k}`,
         group: ctx.group,
         ring: a,
-        mat: 'asphalt',
+        mat: 'curb',
         y: base + 0.0018,
       });
     }
@@ -142,6 +143,17 @@ export function realizeParking(
         ring: isl,
         mat: 'grass',
         y: base + 0.0022,
+      });
+    }
+    // 模块之间的横向步道：铺**沥青**（比车位底色深一档），
+    // 它才是把一条 300 车位的长排切成"一段一段"的那条线。
+    for (const [k, wk] of layout.walks.entries()) {
+      part.surfaces.push({
+        name: `${c.id}_pk_walk_${i}_${k}`,
+        group: ctx.group,
+        ring: wk,
+        mat: 'curb',
+        y: base + 0.0019,
       });
     }
 

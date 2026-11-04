@@ -46,6 +46,15 @@ export interface ParkLayout {
    * 代价是每 6 个车位让出 1.5 m（约 9% 的车位），换来整个场地的观感。
    */
   islands: Pt[][];
+  /**
+   * 模块之间的**横向步道**（宽 2.6 m，横跨双排 + 通道）。
+   *
+   * 车位排每 12 个位断开一次，但断口如果只把车位线拿掉、底子还是同一片
+   * 混凝土，俯视图上根本看不出断开 —— 实测就是"一排 300 个位连成一整条"。
+   * 所以断口要铺成**沥青**（深一档），它才是"段与段之间"的那条线。
+   * 真实停车场的模块缝本来就是走人/种树/立灯杆的硬地。
+   */
+  walks: Pt[][];
   count: number;
   /** 通道占场地面积的比例，做"是否像停车场"的判据 */
   aisleRatio: number;
@@ -109,37 +118,71 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
   const fronts: [Pt, Pt][] = [];
   const aisles: Pt[][] = [];
 
-  const u0 = box.u0 + setback;
-  const u1 = box.u1 - setback;
-  const vTop = box.v1 - setback;
-  let v = box.v0 + setback;
+  // 场地够大时四周留一圈**环形车道**。
+  //
+  // 大停车场的车位不会顶到围栏或建筑墙面 —— 四周有一条 4~6 m 的通行环路，
+  // 消防车、垃圾车、接送车都走这条环。原来 setback 只有 0.7 m（等于没有），
+  // 车位直接怼到边界上，俯视图上整片场地从边到边全是车位，
+  // 和用户参考图里"外围一圈空道 + 里面一排排模块"完全不是一回事。
+  //
+  // 小场地不留：一个 2000 m² 的场去掉一圈环路就剩不下几个位了。
+  const lotArea = Math.abs(area(ring2));
+  const perim = lotArea > 90 ? Math.max(setback, 4.2 / 7) : setback;
 
+  const u0 = box.u0 + perim;
+  const u1 = box.u1 - perim;
+  const vTop = box.v1 - perim;
+  let v = box.v0 + perim;
   const world = (u: number, vv: number) => new Pt(ux.x * u + uy.x * vv, ux.y * u + uy.y * vv);
 
-  // 沿 u 方向按车位宽切列，**每 6 个车位插一条 1.5 m 树池**
+  // 沿 u 方向按车位宽切列：**每 12 个车位断开一次**（模块间隔 2.6 m），
+  // 每 6 个车位插一条 2.4 m 树池。
+  //
+  // ## 为什么要"模块"
+  //
+  // 原来一条车位排从场地这头拉到那头，几百个位连成一条 —— 俯视图上就是
+  // 用户说的"条带形状的布局"：一片灰底上几道等距长条，读不出这是停车场，
+  // 倒像条形码。真实的大型停车场（参考用户 PCG-CITYSKYLINE 里的做法）是
+  // **按 10~16 个车位分成一段**，段与段之间留 2~3 m 的缝隙走下人、种树、
+  // 放灯杆 —— 缝隙一出现，整片场地才有"格子"的节奏，而不是条纹。
+  //
+  // 代价：每 12 个位让出 2.6 m，约掉 8% 的车位。换整片场地的可读性，值。
   const ISLAND_EVERY = 6;
   const ISLAND_W = 2.4 / 7; // 2.4 m → 世界单位（树池含两侧路缘，1.5 太窄读不出来）
+  const MODULE_STALLS = 10;
+  const MODULE_GAP = 3.4 / 7;
   const cols: number[] = [];
   /** 树岛在 u 方向的位置（每个位置跨越整排车位） */
   const islandUs: number[] = [];
+  /** 模块缺口在 u 方向的位置（横跨整排车位 + 通道） */
+  const gapUs: number[] = [];
   {
     let u = u0;
-    let k = 0;
+    let k = 0; // 车位计数（树池节拍用）
+    let m = 0; // 当前模块内已摆的车位数
     while (u + w <= u1 + 1e-6) {
+      // ① 模块间隔：摆满 12 个位就让开 2.6 m
+      if (m >= MODULE_STALLS && u + MODULE_GAP + w <= u1 + 1e-6) {
+        gapUs.push(u);
+        u += MODULE_GAP;
+        m = 0;
+        continue;
+      }
+      // ② 树池
       if (k > 0 && k % ISLAND_EVERY === 0 && u + ISLAND_W + w <= u1 + 1e-6) {
         islandUs.push(u);
         u += ISLAND_W;
         // **k 必须跟着走**。原来这里直接 continue、k 原地不动，于是
         // `k % 6 === 0` 永远成立 —— 一条车位排摆到第 6 个位之后，剩下的
         // 整排全被树池吃掉：实测一个 9889 m² 的停车区只有 50 个车位、
-        // 却长出 363 条树池（占场地 44%），俯视图上看就是"绿灰相间的条纹"，
-        // 读不出是停车场。车位排的循环必须靠 k 前进才会继续摆车位。
+        // 却长出 363 条树池（占场地 44%），俯视图上看就是"绿灰相间的条纹"。
         k++;
         continue;
       }
       cols.push(u);
       u += w;
       k++;
+      m++;
     }
   }
 
@@ -174,6 +217,21 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
     for (const p of parts) if (area(p) > aisle * (u1 - u0) * 0.2) aisles.push(p.map((q) => world(q.x, q.y)));
   };
 
+  const walks: Pt[][] = [];
+  /** 一条 pitch 带里把模块缺口刷成步道 */
+  const emitWalks = (vBase: number, depth: number) => {
+    for (const gu of gapUs) {
+      const quad = [
+        new Pt(gu, vBase),
+        new Pt(gu + MODULE_GAP, vBase),
+        new Pt(gu + MODULE_GAP, vBase + depth),
+        new Pt(gu, vBase + depth),
+      ];
+      if (!quad.every((p) => inside(p, ring2, box))) continue;
+      walks.push(quad.map((q) => world(q.x, q.y)));
+    }
+  };
+
   const pitch = l * 2 + aisle;
   while (v + l <= vTop) {
     const remaining = vTop - v;
@@ -183,11 +241,13 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
       emitAisle(v + l);
       emitRow(v + l + aisle, 'low');
       emitIslands(v + l + aisle);
+      emitWalks(v, pitch);
       v += pitch;
     } else if (remaining >= l + aisle + 0.4) {
       // 只够一排 + 通道
       emitRow(v, 'high');
       emitAisle(v + l);
+      emitWalks(v, l + aisle);
       v += l + aisle;
     } else {
       // 只剩一条单排的位置（贴着对面边界停车）
@@ -206,6 +266,7 @@ function layoutAt(ring: Pt[], angle: number, dims: StallDims): ParkLayout {
     count: dividers.length,
     aisleRatio: lawnArea > 0 ? aisleArea / lawnArea : 0,
     islands,
+    walks,
   };
 }
 
