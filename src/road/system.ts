@@ -741,6 +741,99 @@ export function visibleSpan(e: RoadEdge): [number, number] {
   return [t0, t1];
 }
 
+
+// ---------------------------------------------------------------- 曲线化
+
+/**
+ * 已经做过曲线平滑的节点（`bendSurfaces` 见到就跳过补面）。
+ *
+ * 折点补面是为了堵住"两段直条带在拐点处错开留下的楔形缺口"。条带弯过去之后
+ * 那条缝本来就不存在了，再补一块只会多一块扎出路面的三角。
+ */
+const smoothedNodes = new Set<Pt>();
+
+/** 一条边的起/终点切线：度 2 折点取两段方向的角平分，其余（路口/端点）取自身方向 */
+function tangentAt(net: RoadNet, e: RoadEdge, idx: number, atA: boolean): Pt {
+  const node = atA ? e.a : e.b;
+  const self = atA ? unit(e.b.subtract(e.a)) : unit(e.a.subtract(e.b));
+  const list = net.nodeEdges.get(node) ?? [];
+  if (list.length !== 2) return self;
+  const otherIdx = list[0] === idx ? list[1] : list[0];
+  const other = net.edges[otherIdx];
+  if (!other || other.len < 1e-9 || otherIdx === idx) return self;
+  // 另一条边从该节点看出去的方向
+  const away = other.a === node ? unit(other.b.subtract(other.a)) : unit(other.a.subtract(other.b));
+  // 行进方向（指向节点）= 它的反向
+  const sum = new Pt(-away.x + self.x, -away.y + self.y);
+  const l = Math.hypot(sum.x, sum.y);
+  if (l < 1e-6) return self;
+  return new Pt(sum.x / l, sum.y / l);
+}
+
+/**
+ * 曲线化的中心线：把一段路换成沿二次贝塞尔采样的折线。
+ *
+ * ## 为什么
+ *
+ * 路网是按张量场的格子切出来的**折线**：每一段是直的，两段之间差十几度。
+ * 于是弯道看上去是"几根直棍接起来"，接缝处还有一道明显的错台（用户截图里
+ * 红线标出来的那几处）。真正做曲线渲染要么把整个路网换成样条（拓扑、
+ * 地块、路口全要重写），要么在**画条带这一步**把中心线弯过去 —— 这里选后者：
+ * 拓扑一点不动，只有贴地的面变弯。
+ *
+ * 切线取"相邻两段方向的角平分"，所以相邻两条边的端部切线**完全一致** ——
+ * 接缝处的折角变成零，错台自然消失，这也是补面能关掉的原因。
+ *
+ * ## 偏移上限
+ *
+ * 弯过去之后中心线会离开原来的弦。地块是按**直弦**内缩的，弯太多就会啃进
+ * 路侧带。二次贝塞尔的最大偏移 = |C−M|/2（C 是控制点、M 是弦中点），
+ * 所以把 |C−M| 夹到 2×MAX_DEV 就把偏移锁在 MAX_DEV（0.3 单位 ≈ 2.1 m）以内。
+ * 超过上限的急弯（几乎都是 T 口附近的短折边）老老实实保持直线。
+ */
+function curvedSpan(net: RoadNet, e: RoadEdge, idx: number, t0: number, t1: number): Pt[] {
+  const straight = subLine(e.a, e.b, t0, t1);
+  if (e.len < 1.2) return straight;
+
+  const ta = tangentAt(net, e, idx, true);
+  const tb = tangentAt(net, e, idx, false);
+  const self = unit(e.b.subtract(e.a));
+  // 两端都没折角：直线
+  if (Math.abs(ta.x * self.y - ta.y * self.x) < 1e-4 && Math.abs(tb.x * self.y - tb.y * self.x) < 1e-4) {
+    return straight;
+  }
+
+  const raw = lineHit(e.a, ta, e.b, tb);
+  const mid = new Pt((e.a.x + e.b.x) / 2, (e.a.y + e.b.y) / 2);
+  let C = raw ?? mid;
+  const MAX_DEV = 0.3;
+  const dx = C.x - mid.x;
+  const dy = C.y - mid.y;
+  const dev = Math.hypot(dx, dy);
+  if (dev > MAX_DEV * 2) {
+    const k = (MAX_DEV * 2) / dev;
+    C = new Pt(mid.x + dx * k, mid.y + dy * k);
+  }
+  if (Math.hypot(C.x - mid.x, C.y - mid.y) < 0.02) return straight;
+
+  smoothedNodes.add(e.a);
+  smoothedNodes.add(e.b);
+
+  const n = Math.max(2, Math.min(12, Math.ceil(e.len / 3)));
+  const pts: Pt[] = [];
+  for (let k = 0; k <= n; k++) {
+    const t = t0 + (t1 - t0) * (k / n);
+    const u = 1 - t;
+    pts.push(
+      new Pt(
+        u * u * e.a.x + 2 * u * t * C.x + t * t * e.b.x,
+        u * u * e.a.y + 2 * u * t * C.y + t * t * e.b.y
+      )
+    );
+  }
+  return pts;
+}
+
 /** 生成一条路的全部贴地要素：车行道、人行道、绿化带、路口圆盘与转角环 */
 export function roadSurfaces(net: RoadNet, out: SurfaceFeature[]): void {
   // 先把每个路口的几何算出来，两处都要用：路口自身铺装、直路段条带的端头切裁。
@@ -749,6 +842,7 @@ export function roadSurfaces(net: RoadNet, out: SurfaceFeature[]): void {
   // 是斜着扎进来的 —— 端头的外侧角一定先跨进邻路车行道，留下一块 0.02~0.3 u²
   // 的米色/绿色三角压在沥青上（用户截图里最显眼的那处）。
   // 按几何求"斜切端头"要逐角度推公式，直接做减法最稳。
+  smoothedNodes.clear();
   const jGeom = new Map<Pt, JunctionGeom | null>();
   net.junctions.forEach((j) => jGeom.set(j.center, junctionGeom(j)));
 
@@ -851,10 +945,17 @@ export function roadSurfaces(net: RoadNet, out: SurfaceFeature[]): void {
     // 这里再铺一层只会得到一条 0.002 长的碎面
     if (e.padA + e.padB >= e.len * 0.995) return;
     const [t0, t1] = visibleSpan(e);
-    const seg = subLine(e.a, e.b, t0, t1);
+    const seg = curvedSpan(net, e, i, t0, t1);
 
     // 车行道（在路口铺装之下，不必裁）
-    const car = bandBetween(seg, e.carL, -e.carR);
+    //
+    // 两端各往路口里多伸 0.2 单位（1.4 m）：条带与路口多边形是两份独立几何，
+    // 端头那一刀哪怕差半度，接缝处也会露出一条 1~2 px 的底板细线 ——
+    // 深色沥青上一条米色缝，比什么都显眼（用户截图标出的"点接处模型问题"）。
+    // 同材质重叠不会有任何视觉代价，所以宁可靠过去。
+    const ext = 0.2 / Math.max(e.len, 1e-6);
+    const carSeg = curvedSpan(net, e, i, Math.max(0, t0 - ext), Math.min(1, t1 + ext));
+    const car = bandBetween(carSeg, e.carL, -e.carR);
     if (car) {
       out.push({
         name: `road_${i}`,
@@ -933,6 +1034,7 @@ function bendSurfaces(
     if (list.length !== 2) continue;
     // 已经被并进路口簇的折点：那段由路口喉部盖住，这里再补会多出一块斜三角
     if (net.nodeJunction.has(V)) continue;
+    if (smoothedNodes.has(V)) continue; // 条带已经弯过去了，没有缝要补
     const e1 = net.edges[list[0]];
     const e2 = net.edges[list[1]];
     if (!e1 || !e2 || e1 === e2) continue;
