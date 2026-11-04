@@ -29,6 +29,8 @@ import { Pt } from '../core/geom';
 import { buildScene } from '../scene/build';
 import { buildPlannerBundle } from '../scene/planner-bridge';
 import { siteContextFromModel } from '../town/planning/adapters/model';
+import { SurfaceSampler } from './sampling';
+import { junctionHulls, patchEdges, labelBPoint } from './b-labels';
 import { distToSurfaceEdge } from '../town/planning/core/surface';
 
 // ---------------------------------------------------------------- 覆盖
@@ -81,6 +83,8 @@ export interface CoverageAudit {
   bReason: Record<BReason, number>;
   /** 每类 B 的典型位置（世界坐标，取该类面积最大的块的中心） */
   bSamples: Record<BReason, { x: number; y: number; block: string } | null>;
+  /** G0 原因标签（互斥），面积与占 B 的比例 */
+  gLabels: Record<string, { m2: number; share: number; blocks: number; sample: { x: number; y: number; block: string; evidence: string } | null }>;
   /** 场景自述：seed / patch 数 / 城内块数 / planner 覆盖数，防止跨场景混用数据 */
   scenario: { seed: number; nPatches: number; cityBlocks: number; plannerBlocks: number };
 }
@@ -105,7 +109,11 @@ export interface CoverOpts {
 export function auditCoverage(model: Model, net: RoadNet, opts: CoverOpts = {}): CoverageAudit {
   const STEP = opts.stepU ?? 0.5;
   const CELL = opts.cellU ?? 8;
-  const scene = buildScene(model, { planningMode: 'planner', furniture: false, markings: false });
+  // **唯一一份采样实现**（Phase G0）。审计只是它的一个聚合器：
+  // 网格、AABB 索引、holes 处理、最上层选择全在 SurfaceSampler 里，
+  // G1/G2/G3 的原因标签也用它，不再各写一份。
+  const sampler = new SurfaceSampler(model, { stepU: STEP, cellU: CELL });
+  const scene = sampler.scene;
 
   const isRoad = (s: SurfaceFeature) => s.role === 'road' || isRoadGroup(s.group);
   const isLot = (s: SurfaceFeature) => s.group.startsWith('lot/');
@@ -246,6 +254,12 @@ export function auditCoverage(model: Model, net: RoadNet, opts: CoverOpts = {}):
     return 'unclassified';
   };
 
+  // G0：原因标签（只对 B 点跑）
+  const hulls = junctionHulls(net);
+  const edgeMap = patchEdges(model, net);
+  const gAcc = new Map<string, { m2: number; blocks: Set<string>; sample: { x: number; y: number; block: string; evidence: string } | null }>();
+  let bTotal = 0;
+
   const cellA = STEP * STEP * 49;
   let samples = 0;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -260,45 +274,38 @@ export function auditCoverage(model: Model, net: RoadNet, opts: CoverOpts = {}):
   for (let x = x0; x <= x1; x += STEP) {
     for (let y = y0; y <= y1; y += STEP) {
       samples++;
-      let rec: BlockCoverage | null = null;
-      let pi = -1;
-      for (let i = 0; i < model.patches.length; i++) {
-        const p = model.patches[i];
-        if (p.blocked || !p.withinCity) continue;
-        if (!pointInRing(new Pt(x, y), Array.from(p.shape))) continue;
-        rec = recOf.get(i) ?? null;
-        pi = i;
-        break;
-      }
+      const f = sampler.sample(x, y);
+      if (!f.inCity || !f.block) continue;
+      const rec = blocks.get(f.block);
       if (!rec) continue;
       rec.totalM2 += cellA;
 
-      let inBuilding = false;
-      for (const b of scene.solids) if (pointInRing(new Pt(x, y), b.ring)) { inBuilding = true; break; }
-      if (inBuilding) { rec.buildingM2 += cellA; continue; }
-
-      const cands = grid.get(keyOf(Math.floor(x / CELL), Math.floor(y / CELL))) ?? [];
-      const hits = cands.filter((s) => covers(s, x, y));
-      if (hits.length === 0) {
+      if (f.cover === 'A-building') { rec.buildingM2 += cellA; continue; }
+      if (f.cover === 'C-hole') {
         rec.holeM2 += cellA;
         if (holeSamples.length < 6) holeSamples.push(`(${x.toFixed(1)},${y.toFixed(1)})`);
         continue;
       }
-      hits.sort((a, b) => b.y - a.y);
-      const top = hits[0];
-      if (isRoad(top)) rec.roadM2 += cellA;
-      else if (isPlate(top)) {
+      if (f.cover === 'A-road') rec.roadM2 += cellA;
+      else if (f.cover === 'B-plate') {
         rec.plateM2 += cellA;
-        const parcel = parcelOf.get(pi);
+        const parcel = parcelOf.get(patchIndex(model, f.block));
         const inParcel = parcel ? pointInRing(new Pt(x, y), parcel.outer) : false;
         const isLegacy = !covered.has(rec.block);
-        const why = classifyB(x, y, rec.block, pi, inParcel, isLegacy);
+        const why = classifyB(x, y, rec.block, -1, inParcel, isLegacy);
         bReason[why] += cellA;
         if (!bSamples[why]) bSamples[why] = { x: +x.toFixed(1), y: +y.toFixed(1), block: rec.block };
-      } else if (isLot(top)) rec.plannedM2 += cellA;
-      else rec.plannedM2 += cellA;
 
-      const excl = hits.filter((h) => isLot(h) && !isOverlay(h));
+        const lb = labelBPoint(f, hulls, (b) => edgeMap.get(b) ?? []);
+        const e = gAcc.get(lb.label) ?? { m2: 0, blocks: new Set<string>(), sample: null };
+        e.m2 += cellA;
+        e.blocks.add(rec.block);
+        if (!e.sample) e.sample = { x: +x.toFixed(1), y: +y.toFixed(1), block: rec.block, evidence: lb.evidence };
+        gAcc.set(lb.label, e);
+        bTotal += cellA;
+      } else rec.plannedM2 += cellA;
+
+      const excl = f.hits.filter((h) => isLot(h) && !isOverlay(h));
       if (excl.length >= 2) rec.overlapM2 += cellA;
     }
   }
@@ -323,6 +330,12 @@ export function auditCoverage(model: Model, net: RoadNet, opts: CoverOpts = {}):
     invalidRings,
     bReason,
     bSamples,
+    gLabels: Object.fromEntries(
+      [...gAcc.entries()].map(([k, v]) => [
+        k,
+        { m2: +v.m2.toFixed(0), share: bTotal > 0 ? v.m2 / bTotal : 0, blocks: v.blocks.size, sample: v.sample },
+      ])
+    ),
     scenario: {
       seed: 682063530,
       nPatches: model.patches.length,
@@ -422,4 +435,17 @@ export function auditOverlap(model: Model, net: RoadNet): OverlapAudit {
     totalM2: +conflicts.reduce((s, c) => s + c.areaM2, 0).toFixed(1),
     invalidRings,
   };
+}
+
+/** blockId → patch 下标（parcelOf 是按下标存的） */
+function patchIndex(model: Model, block: string): number {
+  for (let i = 0; i < model.patches.length; i++) {
+    const p = model.patches[i];
+    if (p.blocked || !p.withinCity) continue;
+    const r = Array.from(p.shape);
+    const cx = r.reduce((a, q) => a + q.x, 0) / r.length;
+    const cy = r.reduce((a, q) => a + q.y, 0) / r.length;
+    if (`${Math.round(cx)}:${Math.round(cy)}` === block) return i;
+  }
+  return -1;
 }

@@ -53,6 +53,15 @@ const net = buildRoadNet(m);
     `（B 合计 ${(bTotal / 10000).toFixed(2)} ha）`
   );
   ok('D3 B 类全部有成因归类', unclassified <= 0.25, `${(unclassified * 100).toFixed(0)}% 未归类`);
+  // G0：原因标签必须把 B 类**全部**划分掉（互斥且穷尽），且每条都有几何证据
+  const gl = cov.gLabels;
+  const labelSum = Object.values(gl).reduce((a, v) => a + v.m2, 0);
+  const bSum = Object.values(br).reduce((a, v) => a + v, 0); // bReason 已是 m²
+  console.log('G0 原因标签：' + Object.entries(gl).sort((a, b) => b[1].m2 - a[1].m2)
+    .map(([k, v]) => `${k} ${(v.share * 100).toFixed(0)}%`).join(' · '));
+  ok('G0 标签穷尽覆盖 B 类', Math.abs(labelSum - bSum) / Math.max(bSum, 1) < 0.01, `${labelSum} vs ${bSum}`);
+  ok('G0 每条标签都有几何证据', Object.values(gl).every((v) => !!v.sample?.evidence), JSON.stringify(Object.keys(gl)));
+  ok('G0 unknown 占比 ≤10%', (gl.unknown?.share ?? 0) <= 0.1, `${((gl.unknown?.share ?? 0) * 100).toFixed(1)}%`);
   ok('D3 场景自述完整', cov.scenario.cityBlocks > 0 && cov.scenario.seed === 682063530, JSON.stringify(cov.scenario));
 }
 
