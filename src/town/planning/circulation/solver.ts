@@ -491,7 +491,12 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
   for (const t of targets) {
     const traffic: Traffic = t.kind === 'parking' ? 'vehicle' : t.kind === 'service-door' ? 'service' : 'pedestrian';
     // 取最近的 2 个街道口，够用且不会爆
-    const near = streets.slice().sort((x, y) => dist(x.at, t.at) - dist(y.at, t.at)).slice(0, 2);
+    // 街区出口候选：**按距离排序，最多试 4 个**（有界）。
+    //
+    // 原来只试最近 2 个，而 MF 的 -469:284 上最近两个出口都落在"建筑膨胀区与红线之间
+    // 只剩 1 格（1.5 m）"的窄缝里 —— 车行 2.2 m 净空根本过不去（局部障碍图实测）。
+    // 规则要求：某个出口无解时，要检查**是否存在其他合法街区入口**，而不是硬吸过去。
+    const near = streets.slice().sort((x, y) => dist(x.at, t.at) - dist(y.at, t.at)).slice(0, 4);
     for (const s of near) ods.push({ a: s, b: t, traffic });
   }
 
@@ -595,7 +600,9 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
     if (e.pts.length < 2) continue;
     for (let i = 0; i + 1 < e.pts.length; i++) {
       const r = ribbon(e.pts[i], e.pts[i + 1], e.widthM / 7);
-      const c2 = r ? clipTo(r, [ctx.buildableArea]) : null;
+      // 裁到**红线**（导航域已经是 parcel）。裁到可建区会把走在退线带里的路整段丢掉 ——
+      // industrial 就是这么出现"路径 2 条、铺装 0 m²"的。
+      const c2 = r ? clipTo(r, [ctx.parcel]) : null;
       if (c2) paths.push(c2);
     }
   }
