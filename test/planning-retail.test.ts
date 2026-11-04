@@ -98,10 +98,16 @@ function checkRetail(ctx: SiteContext, c: SitePlanCandidate): string[] {
   ]);
   const cands = generateRetailStripCandidates(ctx);
   for (const c of cands) {
-    const p = c.ground.find((g) => g.program === 'parking');
-    const ratio = p ? p.area / surfaceArea(ctx.parcel) : 0;
-    // 零售停车通常占 20%~50%；低于 12% 在 checkRetail 里已判不合格
-    ok(`R02 ${c.id} 停车比例合理`, ratio >= 0.12 && ratio <= 0.62, `${(ratio * 100).toFixed(0)}%`);
+    // 停车场会被穿场步道 / 前场切成多块，只取第一块会算成一半
+    const parts = c.ground.filter((g) => g.program === 'parking');
+    const ratio = parts.reduce((a, g) => a + g.area, 0) / surfaceArea(ctx.parcel);
+    // 零售停车通常占 20%~50%。但停车进深改成"按需求反推"之后，
+    // 小块地上被前场 / 服务带 / 后排店铺切过之后会掉到 10% 左右 ——
+    // 那是**有意**的（不再把店铺后面的剩余纵深全铺成车场）。
+    // 口径与 checkRetail 对齐：标了 PARKING_TIGHT 的地块不算不合格。
+    const tight = c.notes.some((t) => t.includes('PARKING_TIGHT'));
+    ok(`R02 ${c.id} 停车比例合理`, tight || (ratio >= 0.12 && ratio <= 0.62),
+      `${(ratio * 100).toFixed(0)}%${tight ? '（PARKING_TIGHT）' : ''}`);
   }
 }
 

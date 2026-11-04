@@ -154,7 +154,17 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     // 真实商业地块是**双排店铺围合停车场**（front pad + rear pad），
     // 后排对外还有一条服务通道。这里补上后排，停车落在两排之间。
     parkV1 = v1 - backRow;
-    parkV0 = Math.max(shopV1 + foreD, parkV1 - Math.max(U(16), D - shopD - foreD - backRow));
+    // 停车进深按**需求**定，不是"店铺后面全给"。
+    //
+    // 原来 parkV0 一直顶到店铺前场，等于把剩余纵深全部铺成停车 ——
+    // 实测 retail 停车占 38%、建筑只 20%，整块地读起来是个大停车场。
+    // 商业停车的经验值是"停车面积为店铺的 1.0~1.3 倍"（每 100 m² 店铺 2~3 个位），
+    // 取 1.2 倍反推进深，再夹在 [16 m, 剩余纵深] 之间。
+    // 需求面积按"地块 × 商业停车比 22%"（`DEMAND_CAP.commercial` 的上限），
+    // 再换算成进深。用商品面积反推不行 —— 店铺在这里还没定义。
+    const needDepth = (surfaceArea(ctx.parcel) * 0.22) / Math.max(1e-6, W);
+    const maxDepth = parkV1 - (shopV1 + foreD);
+    parkV0 = parkV1 - Math.min(maxDepth, Math.max(U(16), needDepth));
   } else {
     // 侧向停车：店铺在临街一侧，停车占东半
     shopV0 = v0;
@@ -168,6 +178,32 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   const shop = cut(shopU0, shopU1, shopV0, Math.min(shopV1, v1));
   if (!shop) return null;
 
+  // ---- CBD 地块：裙房 + 塔楼 ----
+  //
+  // CBD 地块原来被当成普通零售，只盖 7 m 单层大盒 —— 整座城"超高层 0"，
+  // 天际线当然平的。这里在店铺中段起一座塔楼（占地约店铺的 34%），
+  // 两侧留 7 m 裙房。塔楼 footprint **从店铺里挖掉**，不叠着放（否则 3D 里 z-fighting）。
+  let cbdDone = false;
+  if (ctx.use === 'cbd') {
+    const tw = (shopU1 - shopU0) * 0.34;
+    const td = shopD * 0.62;
+    const tu0 = (shopU0 + shopU1) / 2 - tw / 2;
+    const tv0 = shopV0 + (shopD - td) * 0.45;
+    const tower = cut(tu0, tu0 + tw, tv0, tv0 + td);
+    if (tower && surfaceArea(tower) > U(10) * U(10)) {
+      const rest = surfaceSubtract([shop], [tower]);
+      for (const r of rest) {
+        if (surfaceArea(r) < U(8) * U(8)) continue;
+        buildings.push({ role: 'podium', footprint: r, height: U(8), notes: ['CBD 裙房（塔楼两侧）'] });
+      }
+      // 塔楼高度按地块规模给：小地块 30 m，大地块 54 m
+      const lotM = surfaceArea(ctx.parcel) * 49;
+      const towerH = lotM > 12000 ? U(54) : lotM > 7000 ? U(42) : U(30);
+      buildings.push({ role: 'tower', footprint: tower, height: towerH, notes: [`CBD 塔楼 ${(towerH * 7).toFixed(0)} m`] });
+      cbdDone = true;
+    }
+  }
+
   // ---- 沿街店面：长条店铺切成 2~5 间 ----
   //
   // 原来一个地块只有**一个 7 m 高的大盒子**，一条商业街看过去全是同尺寸、
@@ -179,8 +215,13 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   // 只在**后侧停车**变体上切：停车临街时店面本来就退在后面，
   // 切开只会让"退后的那排小店"更碎，没有意义。
   const shopLenM = (shopU1 - shopU0) * 7;
-  const shopRows = variant.parking === 'rear' && shopLenM >= 34 ? Math.min(5, Math.max(2, Math.round(shopLenM / 10))) : 1;
-  if (shopRows > 1) {
+  const shopRows =
+    !cbdDone && variant.parking === 'rear' && shopLenM >= 34
+      ? Math.min(5, Math.max(2, Math.round(shopLenM / 10)))
+      : 1;
+  if (cbdDone) {
+    // CBD 已经把店铺拆成裙房 + 塔楼，这里不再生成普通店铺
+  } else if (shopRows > 1) {
     for (let i = 0; i < shopRows; i++) {
       const a = shopU0 + ((shopU1 - shopU0) * i) / shopRows;
       const b = shopU0 + ((shopU1 - shopU0) * (i + 1)) / shopRows;

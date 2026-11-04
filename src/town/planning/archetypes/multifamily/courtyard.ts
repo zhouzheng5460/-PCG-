@@ -45,6 +45,7 @@ import {
 import { evaluateLayout, weightsFor } from '../../core/evaluator';
 import { buildPrincipalCourtCandidate, shouldUsePrincipalAxis } from './principal-court';
 import { claimResidual } from '../shared/claim';
+import { chooseParkingMode } from '../shared/parking-mode';
 
 const U = (m: number) => m / 7;
 
@@ -475,7 +476,23 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
         return surfaceArea(big) > surfaceArea(parkRaw) * 0.25 ? big : null;
       })()
     : null;
-  add('parking', park, variant.rear ? '后侧停车（rear bar 让位）' : '侧向停车（后侧无 bar）');
+  // **停车方式**：住宅区建得满就走地库，地面让给绿地和院子。
+  //
+  // 原来每个地块都铺一块地面停车，整座城看过去到处是停车场。
+  // 真实的多层住宅区：房子盖到 30% 以上时，地面已经没有完整车场的尺寸，
+  // 停车进地下，地面全是院子和绿化。
+  const parkMode = chooseParkingMode({
+    lotM2: surfaceArea(ctx.parcel) * 49,
+    bldM2: buildings.reduce((a, b) => a + surfaceArea(b.footprint), 0) * 49,
+    typology: 'multi_family',
+  });
+  if (parkMode === 'surface') {
+    add('parking', park, variant.rear ? '后侧停车（rear bar 让位）' : '侧向停车（后侧无 bar）');
+  } else if (park) {
+    // 地库 / 路侧：地面这块让给绿地
+    add('landscape', park, parkMode === 'underground' ? '地下车库（地面为绿地）' : '路侧停车（地块内不设车场）');
+    notes.push(parkMode === 'underground' ? 'PARKING_UNDERGROUND：地面不设停车场' : 'PARKING_STREET：停车在路侧');
+  }
 
   // ---- ⑦ 服务：后侧一条窄带，避开停车
   add('service', cut(u0 + W * 0.66, u1 - W * 0.04, v1 - Math.min(U(6), rearD * 0.5), v1), '垃圾/后勤');
@@ -541,7 +558,7 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
 
   // ---- ⑩ 停车需求（只给区域）
   const parkingRequests: ParkingRequest[] = [];
-  if (park) {
+  if (park && parkMode === 'surface') {
     parkingRequests.push({
       role: 'resident',
       region: park,

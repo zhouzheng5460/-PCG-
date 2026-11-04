@@ -39,6 +39,15 @@ export interface RectOpts {
   minSide?: number;
   /** 丢掉面积小于这个值的矩形（世界单位²） */
   minArea?: number;
+  /**
+   * 分解基准角（弧度）。给定时网格**沿这个方向**铺，输出的矩形也平行于它。
+   *
+   * 这是这条算法最关键的参数：不给（=0）就是世界轴对齐，
+   * 而城市里的街道是斜的 —— 于是沿街建筑被切成与世界坐标对齐的小块，
+   * 和街道成一个角度，看起来就是**锯齿状垂直**。
+   * 传 `primaryFrontage` 的方向之后，沿街那一排就是平行于道路的直角盒。
+   */
+  angle?: number;
 }
 
 export function rectsInArea(area: PlanSurface, opts: RectOpts = {}): PlanSurface[] {
@@ -46,7 +55,19 @@ export function rectsInArea(area: PlanSurface, opts: RectOpts = {}): PlanSurface
   const minSide = opts.minSide ?? step * 1.5;
   const minArea = opts.minArea ?? step * step;
 
-  const b = bboxOf(area.outer);
+  // 先旋转到"沿街坐标系"再分解，最后转回世界。
+  const ang = opts.angle ?? 0;
+  const cs = Math.cos(-ang);
+  const sn = Math.sin(-ang);
+  const fwd = (p: Pt) => new Pt(p.x * cs - p.y * sn, p.x * sn + p.y * cs);
+  const back = (p: Pt) => {
+    const c = Math.cos(ang);
+    const s2 = Math.sin(ang);
+    return new Pt(p.x * c - p.y * s2, p.x * s2 + p.y * c);
+  };
+  const work = ang === 0 ? area : surface(area.outer.map(fwd), area.holes.map((h) => h.map(fwd)));
+
+  const b = bboxOf(work.outer);
   const nx = Math.max(1, Math.floor((b.maxX - b.minX) / step));
   const ny = Math.max(1, Math.floor((b.maxY - b.minY) / step));
   // 网格太细就退化成"整块"，避免在大地块上算出几万个格子
@@ -54,7 +75,7 @@ export function rectsInArea(area: PlanSurface, opts: RectOpts = {}): PlanSurface
 
   // ---- ① 标记可用格子
   const ok: boolean[][] = [];
-  const at = (x: number, y: number) => insideSurface(new Pt(x, y), area);
+  const at = (x: number, y: number) => insideSurface(new Pt(x, y), work);
   for (let i = 0; i < nx; i++) {
     ok[i] = [];
     const x0 = b.minX + i * step;
@@ -102,11 +123,37 @@ export function rectsInArea(area: PlanSurface, opts: RectOpts = {}): PlanSurface
         new Pt(x0, y1),
       ]);
       if (surfaceArea(r) < minArea) continue;
-      out.push(r);
+      out.push(ang === 0 ? r : surface(r.outer.map(back)));
     }
   }
 
   return out;
+}
+
+/**
+ * 在**给定基准角**下是不是一个真正的矩形（4 顶点 + 每条边都轴向）。
+ *
+ * 早先用"矩形度 ≥ 0.985"判断，问题是切了一个角的五边形矩形度也能到 0.99 ——
+ * 于是它被原样放过，3D 里就是一个**五边形楼**。用户看的"还有很多多边形"
+ * 就是这批。这里改成严格判：顶点必须 4 个、每条边在基准坐标系里必须是水平或垂直。
+ */
+function isAxisRect(ring: Pt[], ang: number): boolean {
+  if (ring.length !== 4) return false;
+  const cs = Math.cos(-ang);
+  const sn = Math.sin(-ang);
+  const rot = ring.map((p) => new Pt(p.x * cs - p.y * sn, p.x * sn + p.y * cs));
+  let area2 = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = rot[i];
+    const b = rot[(i + 1) % 4];
+    const dx = Math.abs(b.x - a.x);
+    const dy = Math.abs(b.y - a.y);
+    // 每条边必须几乎纯水平或纯垂直（容差 0.02 单位 ≈ 14 cm）
+    if (dx > 0.02 && dy > 0.02) return false;
+    area2 += a.x * b.y - b.x * a.y;
+  }
+  // 退化（面积≈0）不算矩形
+  return Math.abs(area2) > 1e-6;
 }
 
 /**
@@ -116,10 +163,12 @@ export function rectsInArea(area: PlanSurface, opts: RectOpts = {}): PlanSurface
  * 分解只会把好好的一个盒切成几段，反而变差。
  */
 export function asRects(area: PlanSurface, opts: RectOpts = {}): PlanSurface[] {
-  const b = bboxOf(area.outer);
-  const bboxArea = (b.maxX - b.minX) * (b.maxY - b.minY);
-  const rectness = bboxArea > 1e-9 ? surfaceArea(area) / bboxArea : 0;
-  if (rectness >= 0.94 && area.holes.length === 0) return [area];
+  // 矩形度必须在**同一个基准角**下算。
+  //
+  // 这是锯齿的第二个来源：一个平行于斜街的矩形，用世界轴对齐的外接框去量，
+  // 外接框比它大一圈，矩形度只有 0.7~0.85 → 判成"不方正" → 被反复分解成碎片。
+  // 按基准角旋转后再量，它就是 1.00，原样放过。
+  if (area.holes.length === 0 && isAxisRect(area.outer, opts.angle ?? 0)) return [area];
   const rects = rectsInArea(area, opts);
   return rects.length > 0 ? rects : [area];
 }

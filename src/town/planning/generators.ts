@@ -68,11 +68,17 @@ const DIAGNOSTICS: Partial<Record<SiteTypology, (ctx: SiteContext, c: SitePlanCa
  * 矩形化之后 footprint 变了，diagnostics 必须**用同一个函数重算**，
  * 否则评分和几何对不上（覆盖率、围合度、碎片惩罚全都基于 footprint）。
  */
-function rectifyBuildings(c: SitePlanCandidate): boolean {
+function rectifyBuildings(ctx: SiteContext, c: SitePlanCandidate): boolean {
+  // **沿街基准角**：所有建筑按主临街面的方向分解。
+  // 世界轴对齐会在斜街上切出"锯齿状垂直"的小块 —— 这是用户看到的那个问题。
+  const f = ctx.primaryFrontage;
+  const angle = f
+    ? Math.atan2(f.parcelEdge[1].y - f.parcelEdge[0].y, f.parcelEdge[1].x - f.parcelEdge[0].x)
+    : 0;
   let changed = false;
   const out: typeof c.buildings = [];
   for (const b of c.buildings) {
-    const rects = asRects(b.footprint, { step: 0.2, minSide: 0.5 });
+    const rects = asRects(b.footprint, { step: 0.2, minSide: 0.5, angle });
     if (rects.length === 1 && rects[0] === b.footprint) {
       out.push(b);
       continue;
@@ -197,7 +203,7 @@ export function generateCandidates(ctx: SiteContext): SitePlanCandidate[] {
 
   const diag = DIAGNOSTICS[ctx.typology];
   for (const c of cands) {
-    rectifyBuildings(c);
+    rectifyBuildings(ctx, c);
     topUpBuildings(ctx, c);
 
     // 矩形化会把斜边上的三角格子丢掉（约 8% 的可建区）。
