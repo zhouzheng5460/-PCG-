@@ -26,6 +26,8 @@ import { surfaceArea, surfaceInset, type PlanSurface } from '../../core/surface'
 import type { SiteContext } from '../../core/types';
 import type { PlannedAccess, PlannedRegion, SitePlanCandidate } from '../../core/candidate';
 import { siteFrame, ribbon, clipTo, minusAll, type SiteFrame } from '../shared/frame';
+import { streetBuffer } from '../shared/anchors';
+import { areaBudgetOf, formatBudget } from '../shared/budget';
 import { evaluateLayout, weightsFor } from '../../core/evaluator';
 import { greenDiagnostics } from '../../typologies/green';
 
@@ -128,7 +130,13 @@ function build(ctx: SiteContext, f: SiteFrame, spec: Spec): SitePlanCandidate | 
     add('lawn', lawn, '内圈草坪');
     for (const ring of minusAll(buildable, [lawn])) add('planting', ring, '外圈种植带（不可进入）');
   } else if (lawn) {
-    add('lawn', lawn, '连续草坪');
+    // 没有整圈种植带时，**沿临街面留 5 m 绿化缓冲** —— 用户的要求是
+    // "对道路边界形成合理的种植缓冲"，不是给整块地围一圈绿篱。
+    // 草坪要减掉它：两层面重叠会让预算立刻超额（绿地 > 100% 那种口径错）。
+    const buffers = streetBuffer(ctx, f, buildable, 5);
+    for (const b of buffers) add('planting', b, '沿街绿化缓冲 5 m');
+    for (const lp of minusAll(buildable, buffers)) add('lawn', lp, '连续草坪');
+    if (buffers.length) notes.push('沿街 5 m 绿化缓冲 + 连续草坪');
   } else if (planting) {
     add('planting', planting, '保留地 / 林地');
   }
@@ -170,6 +178,9 @@ function build(ctx: SiteContext, f: SiteFrame, spec: Spec): SitePlanCandidate | 
     }
     if (!placed) notes.push('临街面上找不到能开的口（地块过窄或被凹角切断）');
   }
+
+  const budget = areaBudgetOf(ctx, ground, []);
+  notes.push(formatBudget(budget));
 
   return {
     id: spec.id,

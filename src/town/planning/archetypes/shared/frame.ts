@@ -14,6 +14,7 @@ import {
   surfaceIntersect,
   surfaceSubtract,
   insideSurface,
+  ringArea,
   type PlanSurface,
 } from '../../core/surface';
 import type { SiteContext } from '../../core/types';
@@ -195,3 +196,4 @@ export function minusAll(base: PlanSurface, cutters: PlanSurface[]): PlanSurface
     return [base];
   }
 }
+

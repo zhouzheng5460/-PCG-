@@ -160,8 +160,14 @@ for (const u of USES) {
       ok(`${u.label}${i + 1} 有步行入口`, c.access.some((a) => a.kind === 'pedestrian'));
     }
 
-    // 碎片：地面块数不许爆
-    ok(`${u.label}${i + 1} 地面块数 ≤ 10`, c.ground.length <= 10, `${c.ground.length}`);
+    // 碎片：不允许"撒一地小面"。
+    // 判据分两条：
+    //   ① 块数上限放宽到 16 —— 一条环路被布尔切成几段是正常的（它们是**拼得起来**的），
+    //      不是"碎片"；真正的碎是"每块都只有几个平方"。
+    //   ② 每块 ≥ 6 m² —— 这才是碎片的定义。
+    ok(`${u.label}${i + 1} 地面块数 ≤ 16`, c.ground.length <= 16, `${c.ground.length}`);
+    const slivers = c.ground.filter((g) => g.area * 49 < 6);
+    ok(`${u.label}${i + 1} 无 <6m² 碎面`, slivers.length === 0, slivers.map((g) => g.program).join(','));
 
     if (i === 0) {
       signature.set(

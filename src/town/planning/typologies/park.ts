@@ -109,7 +109,12 @@ export function parkDiagnostics(ctx: SiteContext, c: SitePlanCandidate): LayoutD
     groundUsability: Math.min(1, (pathShare + plazaShare + greenShare) / 0.95),
     circulationQuality: 0.45 * bandScore(pathShare, PARK_TARGETS.pathShare) + 0.3 * hierarchy + 0.25 * connectivity,
     deadSpacePenalty: Math.min(1, residualShare / 0.06),
-    fragmentationPenalty: Math.min(1, Math.max(0, c.ground.length - 8) / 10),
+    // 碎片惩罚按**有功能意义的块**算：小于可建区 2% 的块不算独立功能区
+    //（布尔裁剪会把一条环路切成几段，那些 5 m² 的碎角不是"规划碎片"）。
+    fragmentationPenalty: Math.min(
+      1,
+      Math.max(0, c.ground.filter((g) => g.area / Math.max(lotA, 1e-9) >= 0.02).length - 6) / 8
+    ),
     accessConflictPenalty: 0,
     spatialCoreQuality: nodeScore,
     pedestrianClarity: connectivity,
