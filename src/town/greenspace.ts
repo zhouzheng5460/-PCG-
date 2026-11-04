@@ -49,6 +49,7 @@ import { Pt } from '../core/geom';import {
   surfaceArea,
   surfaceInset,
   surfaceSubtract,
+  chamferCorners,
   surfaceIntersect,
   geometryFailures,
 } from './planning/core/surface';
@@ -214,6 +215,7 @@ export function subdivideGreen(area: PlanSurface, program: string, opts: GreenOp
   for (const p of area.outer) rMax = Math.max(rMax, Math.hypot(p.x - c0.x, p.y - c0.y));
 
   const plots: GreenPlot[] = [];
+  const cham = U(1.6); // 块角 1.6 m 倒角
   for (const cell of cells) {
     if (cell.outer.length < 3) continue;
     const c = centroid(cell.outer);
@@ -221,7 +223,12 @@ export function subdivideGreen(area: PlanSurface, program: string, opts: GreenOp
     const jit = (h2(c.x, c.y) - 0.5) * 0.18; // 手抖：免得同一圈全同色又变成色带
     const score = t + jit;
     const kind: GreenPlot['kind'] = score < 0.42 ? 'lawn' : score < 0.74 ? 'meadow' : 'grove';
-    plots.push({ surface: cell, mat: MAT_OF[kind], kind });
+    // 块角切一刀 —— 园路的转弯不是直角（用户："与路之间关系简单，没有圆角"）。
+    // 切的三角不会破面：块是画在园路**上面**的一层，缺的那一小角露出来的
+    // 正是下面那条 gravel 园路，读起来就是"路在草坪边缘拐了个圆弧"。
+    const cut = chamferCorners(cell.outer, cham, cham * 1.6);
+    const ring2 = cut.length >= 4 ? surface(cut) : cell;
+    plots.push({ surface: ring2, mat: MAT_OF[kind], kind });
   }
   if (!plots.length) return null;
 

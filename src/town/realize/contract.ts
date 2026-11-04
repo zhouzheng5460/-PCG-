@@ -83,7 +83,14 @@ export interface RealizationContext {
 /** Ground Program → 材质（R1 的唯一映射表，场景代码里不许再散落 if/else） */
 export const GROUND_MATERIAL: Record<GroundProgram, MatKey> = {
   // 工业
-  truck_court: 'asphaltLot',
+  //
+  // 铺装按**荷载等级**分三层，这是工业总图最核心的读法：
+  //   货场 + 装卸坪 = 混凝土（最亮）—— 重载、叉车、拖挂，用不到沥青
+  //   员工停车 + 服务道 = 沥青（中/深）—— 轻载，且要能画出车位线
+  //   缓冲带 + 设备场 = 砂石（暖灰）
+  // 原来 truck_court 和 employee_parking 都是 asphaltLot，工厂后面那 30%
+  // 读成"一整片灰"，看不出哪里能走叉车、哪里是车位。
+  truck_court: 'concrete',
   loading_apron: 'concrete',
   service_lane: 'asphalt',
   employee_parking: 'asphaltLot',
