@@ -127,6 +127,8 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   const buildings: PlannedBuilding[] = [];
 
   // 沿 v 方向切三/四段：取决于是"停车在前"还是"店铺在前"
+  // 后排店铺：进深 > 70 m 时尾部让出 22 m
+  const backRow = D > U(70) ? U(22) : 0;
   let shopV0: number;
   let shopV1: number;
   let parkV0: number;
@@ -141,11 +143,18 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     shopV1 = shopV0 + shopD;
     if (parkV1 - parkV0 < U(12)) notes.push('停车进深不足 12 m');
   } else if (variant.parking === 'rear') {
-    // 路 → 店铺 → 前场（在店铺与停车之间）→ 停车
+    // 路 → 店铺 → 前场 → 停车（→ 后排店铺）
     shopV0 = v0;
     shopV1 = v0 + shopD;
-    parkV1 = v1;
-    parkV0 = Math.max(shopV1 + foreD, v1 - Math.max(U(16), D - shopD - foreD));
+    // **后排店铺**：地块进深超过 70 m 时，尾部再放一排店铺。
+    //
+    // 122 m 街区退线后进深约 92 m，深 22 m 的店铺只占 1/4，
+    // 后面 70 m 全给停车 → 实测 retail 停车占 38%、建筑只 20%，
+    // 整块地读起来是"一个大停车场配一间店"。
+    // 真实商业地块是**双排店铺围合停车场**（front pad + rear pad），
+    // 后排对外还有一条服务通道。这里补上后排，停车落在两排之间。
+    parkV1 = v1 - backRow;
+    parkV0 = Math.max(shopV1 + foreD, parkV1 - Math.max(U(16), D - shopD - foreD - backRow));
   } else {
     // 侧向停车：店铺在临街一侧，停车占东半
     shopV0 = v0;
@@ -195,6 +204,27 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
       frontSide: new Pt(vDirOf(f).x, vDirOf(f).y),
       notes: [`店铺进深 ${SHOP_DEPTH_M} m，沿街 ${shopLenM.toFixed(0)} m`],
     });
+  }
+
+  // 后排店铺（面向停车场的第二排），只在深地块上出现，且**受总量约束**。
+  //
+  // 无条件加的话，深地块会变成"两排店铺 + 停车"，覆盖率冲到 57%（带上限 26%）——
+  // 那是把商业地块做成了密排商业街。这里加一道闸：已有建筑超过地块的 30% 就不加，
+  // 保证后排只用来"把大地块的停车量换成店面"，不是无脑加密。
+  const lotA0 = surfaceArea(ctx.parcel);
+  const bldA0 = buildings.reduce((a, b) => a + surfaceArea(b.footprint), 0);
+  if (backRow > 0) {
+    const back = cut(shopU0, shopU1, v1 - backRow, v1);
+    // **加完之后**的总量要落在 30% 以内才收 —— 只看加之前的量没用：
+    // 主店自己就可能已经 20%，再加一排直接冲到 40%+（实测最大 57%）。
+    if (back && (bldA0 + surfaceArea(back)) / lotA0 <= 0.3) {
+      buildings.push({
+        role: 'podium',
+        footprint: back,
+        height: U(7),
+        notes: [`后排店铺（进深 ${(backRow * 7).toFixed(0)} m，与主店夹住停车场）`],
+      });
+    }
   }
 
   if (variant.lShop) {
