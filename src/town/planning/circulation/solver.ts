@@ -104,13 +104,34 @@ interface Grid {
   y0: number;
   nx: number;
   ny: number;
-  /** 0 = 可走，1 = 建筑/不可走 */
+  /** 0 = 可走，非 0 = 不可走（按位解释，见 BLOCK_* ） */
   blocked: Uint8Array;
+  /** 障碍来源位掩码：1=建筑净空 2=parcel 外 4=硬性禁行 */
+  reason: Uint8Array;
   inset: PlanSurface;
 }
 
+export const BLOCK_BUILDING = 1;
+export const BLOCK_OUTSIDE_PARCEL = 2;
+export const BLOCK_HARD = 4;
+
+export function blockSourceName(mask: number): string {
+  if (mask === 0) return '可走';
+  const out: string[] = [];
+  if (mask & BLOCK_BUILDING) out.push('建筑净空');
+  if (mask & BLOCK_OUTSIDE_PARCEL) out.push('红线外');
+  if (mask & BLOCK_HARD) out.push('禁行');
+  return out.join('+');
+}
+
 function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): Grid {
-  const r = ctx.buildableArea.outer;
+  // **导航域 = parcel，不是 buildableArea**。
+  //
+  // 这是 R1.1 的核心职责边界：`buildableArea` 是"建筑能盖在哪"，它已经按退线
+  // 内缩了一圈；而内部道路、停车通道、步行接驳**完全可以走在退线带里**。
+  // 拿 buildableArea 当交通范围，等于把整个退线带判成禁行 —— 停在退线带上的
+  // 停车区就成了孤岛（实测 park_0 只剩 1~3 个格子）。
+  const r = ctx.parcel.outer;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const p of r) {
     x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
@@ -119,16 +140,17 @@ function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): 
   const nx = Math.max(2, Math.ceil((x1 - x0) / CELL));
   const ny = Math.max(2, Math.ceil((y1 - y0) / CELL));
   const blocked = new Uint8Array(nx * ny);
+  const reason = new Uint8Array(nx * ny);
   const clr = clearanceM / 7;
 
-  const inside = (x: number, y: number) => pointIn(x, y, ctx.buildableArea.outer);
+  const inside = (x: number, y: number) => pointIn(x, y, ctx.parcel.outer);
   for (let i = 0; i < nx; i++) {
     for (let j = 0; j < ny; j++) {
       const x = x0 + (i + 0.5) * CELL;
       const y = y0 + (j + 0.5) * CELL;
-      if (!inside(x, y)) { blocked[j * nx + i] = 1; continue; }
+      if (!inside(x, y)) { blocked[j * nx + i] = 1; reason[j * nx + i] = BLOCK_OUTSIDE_PARCEL; continue; }
       for (const b of c.buildings) {
-        if (distToRing(x, y, b.footprint.outer) < clr) { blocked[j * nx + i] = 1; break; }
+        if (distToRing(x, y, b.footprint.outer) < clr) { blocked[j * nx + i] = 1; reason[j * nx + i] = BLOCK_BUILDING; break; }
       }
     }
   }
@@ -152,12 +174,12 @@ function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): 
         if (!pointIn(x, y, r)) continue;
         // 只解除"因膨胀而被封"的格子；真在建筑内部的仍然不可走
         const inBld = c.buildings.some((b) => pointIn(x, y, b.footprint.outer) && distToRing(x, y, b.footprint.outer) > 0.01);
-        if (!inBld) blocked[j * nx + i] = 0;
+        if (!inBld) { blocked[j * nx + i] = 0; reason[j * nx + i] = 0; }
       }
     }
   }
 
-  return { x0, y0, nx, ny, blocked, inset: ctx.buildableArea };
+  return { x0, y0, nx, ny, blocked, reason, inset: ctx.parcel };
 }
 
 function toCell(g: Grid, p: Pt): [number, number] {
@@ -492,9 +514,15 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
       // 停车/门的兜底方向：朝最近街道口
       const toward = new Pt(od.a.block.x - od.b.block.x, od.a.block.y - od.b.block.y);
       const tl = Math.hypot(toward.x, toward.y) || 1;
-      // 停车口朝街道推；门朝街推（离开建筑膨胀区）；后勤口同样
+      // 方向按 Portal 语义分开，不用"全局反向"这一条规则：
+      //   · 街区出口：朝地块内部（栅格在 parcel 内，出口在 parcel 边上）
+      //   · 建筑门 / 后勤口 / 停车口：朝**场地内部**（离开建筑膨胀区，进入可通行区）
+      // 拿"朝街道"去推门和后勤口，方向是反的 —— retail 的 svc 就是这么 outside-grid 的。
+      const centroid = ctx.parcel.outer.reduce((a, q) => new Pt(a.x + q.x / ctx.parcel.outer.length, a.y + q.y / ctx.parcel.outer.length), new Pt(0, 0));
+      const inw = new Pt(centroid.x - od.b.block.x, centroid.y - od.b.block.y);
+      const il = Math.hypot(inw.x, inw.y) || 1;
       const dirB = od.b.kind === 'parking' || od.b.kind === 'door' || od.b.kind === 'service-door'
-        ? new Pt(toward.x / tl, toward.y / tl)
+        ? (od.b.kind === 'parking' ? new Pt(toward.x / tl, toward.y / tl) : new Pt(inw.x / il, inw.y / il))
         : undefined;
       const sb = snapWithReason(g, od.b.block, 40, dirB);
       sa.component = sa.to ? comp[idxOf(g, sa.to)] : -1;
