@@ -566,7 +566,9 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
         const k = j * g.nx + i;
         use.set(k, (use.get(k) ?? 0) + 1);
       }
-      edges.push({
+      // **每个目标只保留一条**：出口候选只是为了"找到能通的那个"，不是四条都要建。
+      // 之前把 4 次候选搜索全记成道路，retail 的路网从 65 m 涨到 845 m —— 全是重复。
+      const cand: CirEdge = {
         from: od.a.id,
         to: od.b.id,
         traffic: od.traffic,
@@ -574,7 +576,10 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
         lengthM: +lenM(best).toFixed(1),
         shared: 1,
         widthM: od.traffic === 'pedestrian' ? 3 : 5,
-      });
+      };
+      const prev = edges.find((e) => e.to === od.b.id);
+      if (!prev) edges.push(cand);
+      else if (cand.lengthM < prev.lengthM) edges[edges.indexOf(prev)] = cand;
     }
   }
 
@@ -591,7 +596,11 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
     e.shared = Math.round((sharedCells / Math.max(e.pts.length, 1)) * 10) / 10;
     e.widthM = e.shared >= 0.5 ? 5 : 3;
   }
-  const kept = edges.filter((e) => e.lengthM >= 8);
+  // 剪枝**不能剪掉某个目标的唯一连接** —— 一条 6 m 的短接驳如果它是进门的唯一一条，
+  // 剪了就等于"入口连通"，但实际没路。原来 retail 就是这么从 ✓ 变 ✗ 的。
+  const countByTarget = new Map<string, number>();
+  for (const e of edges) countByTarget.set(e.to, (countByTarget.get(e.to) ?? 0) + 1);
+  const kept = edges.filter((e) => e.lengthM >= 8 || (countByTarget.get(e.to) ?? 0) === 1);
   const pruned = edges.length - kept.length;
 
   // ⑦ 路径 → 多边形（裁到可建区；与绿地用同一份最终几何）

@@ -346,9 +346,19 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
     // bar 占满整个面宽，院子被它和街道完全隔开，人在平面上无路可走。
     // 门洞宽 5 m，两侧各留一段 bar（每段都得过纸片楼检查）。
     const bar = cut(u0, u1, v0, v0 + frontD);
-    const gate = W * 7 >= 24 ? cut(entryU - U(2.5), entryU + U(2.5), v0 - U(1), v0 + frontD + U(1)) : null;
+    // 门洞宽度与开洞条件（R1.1-B）：
+    //   · 有**地面停车**时必须开到 6 m —— 5 m 减去两侧 0.5 m 缘石后只剩 4 m，
+    //     车行净空（2.2 m 半径 = 4.4 m 通道）刚好卡死；6 m 才留得住。
+    //   · 开洞门槛从 24 m 降到 14 m：窄地块上原先不开洞，等于整条临街面被封死，
+    //     车只能绕到后面 —— 实测 MF `-469:284` 就是这么变成"停车没有合法车行口"的。
+    // 门洞一律 6 m、门槛一律 14 m（不再按停车模式分叉 —— `parkMode` 在这之后才算出来）：
+    //   · 5 m 减去两侧缘石只剩 4 m，车行通道（2.2 m 净空 = 4.4 m）刚好卡死；
+    //   · 门槛 24 m 太大，窄地块上整条临街面被封死，车只能绕后面 —— 实测 MF `-469:284`
+    //     就是这样变成"停车没有合法车行口"的。
+    const gateW = U(3);
+    const gate = W * 7 >= 14 ? cut(entryU - gateW, entryU + gateW, v0 - U(1), v0 + frontD + U(1)) : null;
     const parts = bar && gate ? surfaceSubtract([bar], [gate]) : bar ? [bar] : [];
-    for (const part of parts) pushBar(part, gate ? '临街 bar（中留 5 m 入口门洞）' : '临街 bar（主街界面）', hFront);
+    for (const part of parts) pushBar(part, gate ? `临街 bar（中留 ${(gateW * 2 * 7).toFixed(0)} m 入口门洞）` : '临街 bar（主街界面）', hFront);
     gateOpen = !!gate;
   }
   // 后侧 bar **不占满面宽**：留出一段给停车。早先 rear bar 占满，停车只能往院子边上挤，
