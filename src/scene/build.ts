@@ -11,6 +11,7 @@ import { patchKey } from '../town/patch';
 import { buildPlannerBundle, type PlanningMode } from './planner-bridge';
 import type { LandUse, LotInfo, Scene, SolidFeature } from './types';
 import { emptyScene, toCCW } from './types';
+import type { MatKey } from './palette';
 
 export interface SceneOptions {
   /** 建筑高度倍率 */
@@ -33,12 +34,49 @@ export interface SceneOptions {
   planningMode?: PlanningMode;
 }
 
+
+/**
+ * 地块底板的颜色 = 这块地"本来就该是什么地面"。
+ *
+ * 它只在所有地块内容之下的缝隙里露出来（路口转角、楔形尖角、退线带），
+ * 所以取"街区基底"这一档就够了：住宅/绿地是草，商业/市政是铺装，
+ * 工业是砂石，停车场是沥青。
+ */
+function patchBaseMat(patch: Model['patches'][number]): MatKey {
+  const use = (patch.override?.use ?? (patch.ward as unknown as { use?: string } | null)?.use ?? 'residential') as string;
+  switch (use) {
+    case 'green':
+    case 'park':
+      return 'grass';
+    case 'cbd':
+      return 'stonePave';
+    case 'commercial':
+    case 'civic':
+      return 'paver';
+    case 'industrial':
+      return 'gravel';
+    case 'parking':
+      return 'asphaltLot';
+    default:
+      return 'lawn';
+  }
+}
+
 export function buildScene(model: Model, opts: SceneOptions = {}): Scene {
   const scene = emptyScene();
   const heightScale = opts.heightScale ?? 1;
   const wantLots = opts.lots !== false;
 
   // 1. 地面底板：只覆盖城内，避免地块铺满整张图
+  //
+  // 底板**按地块用途上色**，不再统一刷成中灰（mat `ground`）。
+  //
+  // 原因：地块是按"每条边各自的退线"内缩出来的，路口的转角、楔形地块的尖角
+  // 这些地方总会露出一圈底板 —— 实测全城有 8.7% 的面积露着底板。统一的灰
+  // 一露出来就是"这块地是空的"，用户截图里圈的那些大块空地全是它。
+  // 换成用途底色之后，同样的缺口读起来是"路侧的绿化带 / 铺装边带"，
+  // 而不是一个没规划完的洞 —— 因为底板本来就在所有地块内容**之下**，
+  // 只在地块内容没盖到的缝隙里露出来。
   if (opts.ground !== false) {
     for (const patch of model.patches) {
       if (!patch.withinCity) continue;
@@ -47,7 +85,7 @@ export function buildScene(model: Model, opts: SceneOptions = {}): Scene {
         name: 'ground',
         group: 'ground',
         ring: toCCW(Array.from(patch.shape)),
-        mat: 'ground',
+        mat: patchBaseMat(patch),
         y: -0.02,
       });
     }
