@@ -150,10 +150,13 @@ function buildVariant(ctx: SiteContext, f: Frame): SitePlanCandidate | null {
   // 纵深按**比例**分，只给"绝对下限"兜底。
   // 早先前后场都写成 clamp(比例, 6m, 18m)，大工地上比例算出来 50 m 会被夹到 18 m，
   // 三个变体于是长得一模一样 —— 变体差异必须由比例决定，不能被固定米数抹平。
+  // 纵深分配按 TestFit Industrial 参考的比例：厂房 ~40%、货场/停车 ~45%、绿化带 ~15%。
+  // 原来货场占 26~34%、前场再吃 20%，厂房只剩 21~25% 的进深 ——
+  // 实测整块地建筑只占 13%（强度带下限是 16%），读起来是"一大片空场 + 一间仓"。
   const lane = U(7);
-  let truck = Math.max(U(12), D * (variant.bigYard ? 0.34 : 0.26));
-  const apron = Math.max(U(6), D * 0.09);
-  let front = Math.max(U(6), D * variant.frontRatio);
+  let truck = Math.max(U(12), D * (variant.bigYard ? 0.28 : 0.21));
+  const apron = Math.max(U(6), D * 0.07);
+  let front = Math.max(U(6), D * variant.frontRatio * 0.6);
   let whDepth = D - front - apron - truck - lane;
 
   // 进深不够：先压前场，再压货场，保住仓库最小 18 m

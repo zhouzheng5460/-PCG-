@@ -300,6 +300,62 @@ export function surfaceIntersect(a: PlanSurface[], b: PlanSurface[]): PlanSurfac
  * 把多边形裁到这条线的内侧，逐边做完就是变距内缩。
  * 环必须是 CCW（左手法线朝内），否则先翻转。
  */
+/**
+ * 转角倒角（chamfer）。
+ *
+ * 城市规划里地块在街角**必须切角**，不是直角怼上去：
+ * 转弯半径、人行道加宽、视线三角都靠这个角。我们的地块从 patch 内缩之后
+ * 全是直角，路口看过去"地块像刀切的"——这就是用户圈出来的那个问题。
+ *
+ * 只切**凸角**（CCW 环上叉积 > 0），凹角切了会把地块咬出缺口。
+ * 每边退 `d` 得到两个切点，用一条直线代替顶点。
+ *
+ * @param d 沿两边各退多少（世界单位）
+ * @param minEdge 这条边短于它就不切（否则切点会跑到对面顶点外）
+ */
+export function chamferCorners(
+  ring: ReadonlyArray<{ x: number; y: number }>,
+  d: number,
+  minEdge = d * 2.5
+): Pt[] {
+  const n = ring.length;
+  if (n < 3 || d <= 1e-9) return ring.map((p) => new Pt(p.x, p.y));
+  const src = ringArea(ring as Pt[]) < 0 ? ring.slice().reverse() : ring.slice();
+  const out: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = src[(i - 1 + n) % n];
+    const cur = src[i];
+    const next = src[(i + 1) % n];
+    const l1 = Math.hypot(prev.x - cur.x, prev.y - cur.y);
+    const l2 = Math.hypot(next.x - cur.x, next.y - cur.y);
+    if (l1 < minEdge || l2 < minEdge) {
+      out.push(new Pt(cur.x, cur.y));
+      continue;
+    }
+    // 凸角判定（CCW：cross > 0）
+    const ax = cur.x - prev.x;
+    const ay = cur.y - prev.y;
+    const bx = next.x - cur.x;
+    const by = next.y - cur.y;
+    const cross = ax * by - ay * bx;
+    const dot = ax * bx + ay * by;
+    const turn = Math.atan2(cross, dot); // 转角（弧度，凸角为正）
+    if (cross <= 1e-9 || turn > 2.6) {
+      // 凹角 / 共线 / 几乎折返：不切
+      out.push(new Pt(cur.x, cur.y));
+      continue;
+    }
+    // 按转角大小收放倒角长度：钝角少切、直角满切
+    const k = Math.min(1, turn / (Math.PI / 2));
+    const dd = d * k;
+    out.push(
+      new Pt(cur.x + ((prev.x - cur.x) / l1) * dd, cur.y + ((prev.y - cur.y) / l1) * dd),
+      new Pt(cur.x + ((next.x - cur.x) / l2) * dd, cur.y + ((next.y - cur.y) / l2) * dd)
+    );
+  }
+  return out;
+}
+
 export function insetPerEdge(ring: ReadonlyArray<{ x: number; y: number }>, dists: number[]): Pt[] {
   const n = ring.length;
   // 输入只要求 {x,y}（adapters 那层的 patch 顶点是轻量对象），

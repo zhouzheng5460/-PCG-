@@ -8,7 +8,7 @@ import { Model } from '../../model';
 import { Patch, patchKey } from '../../patch';
 import { buildRoadNet, type RoadNet } from '../../../road/system';
 import type { Pt as GeoPt } from '../../../core/geom';
-import { surface, insetPerEdge, surfaceInset, surfaceArea, type PlanSurface } from '../core/surface';
+import { surface, insetPerEdge, chamferCorners, surfaceInset, surfaceArea, type PlanSurface } from '../core/surface';
 import { buildSiteContext, queryNeighbors, summarizeSite, eligibleArchetypes } from '../core/context';
 import type { SiteContext, SiteRoadEdge, SiteTypology } from '../core/types';
 
@@ -76,7 +76,12 @@ function parcelOf(net: RoadNet, patch: Patch): PlanSurface {
       ? uniform[0]
       : surface(Array.from(patch.shape));
   }
-  return surface(inset);
+  // 转角倒角：地块在街角不能直角怼上去（转弯半径 / 人行道加宽 / 视线三角
+  // 都靠这个角）。内缩之后全是直角，路口看过去"地块像刀切的"。
+  // 只切凸角；边太短的跳过（见 chamferCorners）。
+  const chamfered = chamferCorners(inset, 0.5); // 0.5 单位 ≈ 3.5 m
+  if (chamfered.length < 3) return surface(inset);
+  return surface(chamfered);
 }
 
 /** 找 patch 上 (a,b) 这条边对应的 road edge */
