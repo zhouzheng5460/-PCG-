@@ -105,10 +105,16 @@ function build(ctx: SiteContext, f: SiteFrame, spec: Spec): SitePlanCandidate | 
   // 没有真实人流量数据，界面宽度是最诚实的代理：门口多宽，集散就多深。
   // 变体里的 plazaRatio 退化成"上限系数"，不再主导。
   const hallW0 = Math.max(U(14), Math.min(W * spec.hallWRatio, W - U(6)));
+  // 再加一条"可用空间"上限：前场（含两侧各 2 m）不得超过可建区的 28%。
+  // 小地块上"界面宽 × 0.45"会切出一块比建筑还大的空场 —— 那不是集散需求，
+  // 是没地方放别的东西。
+  const plazaW0 = Math.min(W - U(2), hallW0 + U(4));
+  const byArea = (surfaceArea(buildable) * 0.28) / Math.max(plazaW0, U(6));
   const plazaD = Math.min(
     Math.max(hallW0 * 0.45, U(10), D * spec.plazaRatio * 0.6),
     U(26),
-    D * 0.4
+    D * 0.4,
+    Math.max(U(8), byArea)
   );
   const rearD = Math.min(U(10), D * 0.12);
   const hallMaxD = D - plazaD - rearD - U(4);

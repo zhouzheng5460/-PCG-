@@ -37,7 +37,10 @@ export const CIVIC_TARGETS = {
   /** 建筑基底占可建区 */
   coverage: { min: 0.12, preferredMin: 0.2, preferredMax: 0.42, max: 0.55 },
   /** 主入口广场占可建区 */
-  plaza: { min: 0.05, preferredMin: 0.1, preferredMax: 0.3, max: 0.45 },
+  // 前场偏好区间放到 8%~25%：公共建筑前面那一块占场地 1/4 是常态
+  //（政务中心、文化馆、卫生中心都是这个量级），原来卡在 15% 会把
+  // 「前场做得够气派」当成缺点扣分。
+  plaza: { min: 0.05, preferredMin: 0.08, preferredMax: 0.25, max: 0.42 },
   /** 绿地占可建区 */
   green: { min: 0.15, preferredMin: 0.25, preferredMax: 0.55, max: 0.7 },
 };
@@ -116,7 +119,12 @@ export function civicDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layout
     groundUsability: Math.min(1, (coverage + plazaShare + greenShare + parkShare) / 0.95),
     circulationQuality: 0.6 * sequence + 0.4 * separation,
     deadSpacePenalty: Math.min(1, residualShare / 0.06),
-    fragmentationPenalty: Math.min(1, Math.max(0, c.ground.length - 7) / 8),
+    // 与 park 一致：只数 ≥2% 可建区的块。草坪被广场/后勤/停车切出来的
+    // 几块边角不是"规划碎片"，是同一个功能区的不同位置。
+    fragmentationPenalty: Math.min(
+      1,
+      Math.max(0, c.ground.filter((g) => g.area / Math.max(lotA, 1e-9) >= 0.02).length - 7) / 8
+    ),
     accessConflictPenalty: Math.max(0, 1 - separation) * 0.8,
     spatialCoreQuality: bandScore(plazaShare, CIVIC_TARGETS.plaza),
     pedestrianClarity: sequence,

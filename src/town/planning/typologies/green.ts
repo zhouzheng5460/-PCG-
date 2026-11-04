@@ -48,8 +48,13 @@ export function greenDiagnostics(ctx: SiteContext, c: SitePlanCandidate): Layout
   const residualA = c.ground.filter((g) => g.program === 'residual').reduce((a, g) => a + g.area, 0);
   const pathA = c.ground.filter((g) => g.program === 'pedestrian').reduce((a, g) => a + g.area, 0);
 
-  // 连续度：最大一片 / 全部绿。一片到底 = 1
-  const continuity = greenA > 1e-9 ? biggest / greenA : 0;
+  // 连续度：**只看草坪**。
+  //
+  // 原来的口径是"最大一片绿 / 全部绿"，于是沿街加一条 5 m 种植带就把
+  // "连续性"从 1.0 打到 0.88 —— 可种植带本来就不该算"被切碎的草坪"：
+  // 用户要的是"保留大块完整绿地"，说的是可进入的那块。
+  const lawnBiggest = c.ground.filter((g) => g.program === 'lawn').reduce((a, g) => Math.max(a, g.area), 0);
+  const continuity = lawnA > 1e-9 ? lawnBiggest / lawnA : greenA > 1e-9 ? biggest / greenA : 0;
   // 可进入度：草坪占绿地的比例，落在 GREEN_TARGETS.lawnShare 的偏好区间内给满分
   const lawnShare = greenA > 1e-9 ? lawnA / greenA : 0;
   const band = GREEN_TARGETS.lawnShare;

@@ -113,7 +113,9 @@ export function parkDiagnostics(ctx: SiteContext, c: SitePlanCandidate): LayoutD
     //（布尔裁剪会把一条环路切成几段，那些 5 m² 的碎角不是"规划碎片"）。
     fragmentationPenalty: Math.min(
       1,
-      Math.max(0, c.ground.filter((g) => g.area / Math.max(lotA, 1e-9) >= 0.02).length - 6) / 8
+      // 阈值放到 10：一个环路 + 3 个节点 + 中心 + 2 条入口 + 草坪/种植，
+      // 本来就接近十块；再往上才叫"撒一地"。
+      Math.max(0, c.ground.filter((g) => g.area / Math.max(lotA, 1e-9) >= 0.02).length - 10) / 8
     ),
     accessConflictPenalty: 0,
     spatialCoreQuality: nodeScore,
