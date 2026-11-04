@@ -89,6 +89,8 @@ export interface CirResult {
     subM: number;
     paveM2: number;
     sharedRate: number;
+    /** 真实共享段长度（m） */
+    sharedM: number;
     connected: boolean;
     ms: number;
     cells: number;
@@ -98,6 +100,8 @@ export interface CirResult {
 
 /** 交通类型 → 需要的净空半径（m）。车要 3 m 才开得过去 */
 const CLEAR: Record<Traffic, number> = { pedestrian: 0.5, vehicle: 2.2, service: 2.2 };
+/** 距离场的截断值（世界单位）：必须 ≥ 最大净空，否则复用时会误判 */
+const FIELD_CAP = (Math.max(...Object.values(CLEAR)) * 1.5) / 7;
 
 interface Grid {
   x0: number;
@@ -108,6 +112,8 @@ interface Grid {
   blocked: Uint8Array;
   /** 障碍来源位掩码：1=建筑净空 2=parcel 外 4=硬性禁行 */
   reason: Uint8Array;
+  /** 到最近建筑的距离场（-1 = 红线外），供其他交通类型直接复用 */
+  field?: Float32Array;
   inset: PlanSurface;
 }
 
@@ -124,7 +130,7 @@ export function blockSourceName(mask: number): string {
   return out.join('+');
 }
 
-function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): Grid {
+function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number, prevField?: Float32Array): Grid {
   // **导航域 = parcel，不是 buildableArea**。
   //
   // 这是 R1.1 的核心职责边界：`buildableArea` 是"建筑能盖在哪"，它已经按退线
@@ -142,18 +148,10 @@ function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): 
   const blocked = new Uint8Array(nx * ny);
   const reason = new Uint8Array(nx * ny);
   const clr = clearanceM / 7;
-
-  const inside = (x: number, y: number) => pointIn(x, y, ctx.parcel.outer);
-  for (let i = 0; i < nx; i++) {
-    for (let j = 0; j < ny; j++) {
-      const x = x0 + (i + 0.5) * CELL;
-      const y = y0 + (j + 0.5) * CELL;
-      if (!inside(x, y)) { blocked[j * nx + i] = 1; reason[j * nx + i] = BLOCK_OUTSIDE_PARCEL; continue; }
-      for (const b of c.buildings) {
-        if (distToRing(x, y, b.footprint.outer) < clr) { blocked[j * nx + i] = 1; reason[j * nx + i] = BLOCK_BUILDING; break; }
-      }
-    }
-  }
+  /** 停车区解除封死：车就停在上面，不是障碍。两条建表路径都要调用 ——
+   *  复用分支（prevField）之前漏了这一步，导致第二、三种交通把停车区判成禁行，
+   *  park_0 全部 no-free-cell。 */
+  const carveParking = () => {
   // **停车区本身是可通行的**（车就停在上面）。
   //
   // 不做这一步时，建筑按 2.2 m 膨胀后会把内部停车场整圈围死 —— 实测 MF 的停车区
@@ -179,7 +177,63 @@ function buildGrid(ctx: SiteContext, c: SitePlanCandidate, clearanceM: number): 
     }
   }
 
-  return { x0, y0, nx, ny, blocked, reason, inset: ctx.parcel };
+  };
+
+  if (prevField) {
+    // 复用同一块地的距离场：只按本交通类型重新阈值化，不再逐格算建筑距离。
+    for (let k = 0; k < nx * ny; k++) {
+      if (prevField[k] < 0) { blocked[k] = 1; reason[k] = BLOCK_OUTSIDE_PARCEL; }
+      else if (prevField[k] < clr) { blocked[k] = 1; reason[k] = BLOCK_BUILDING; }
+      else { blocked[k] = 0; reason[k] = 0; }
+    }
+    carveParking();
+    return { x0, y0, nx, ny, blocked, reason, inset: ctx.parcel, field: prevField };
+  }
+
+  const inside = (x: number, y: number) => pointIn(x, y, ctx.parcel.outer);
+  // **距离场**（-1 = 红线外；其余 = 到最近建筑 footprint 的距离）。
+  // 原来三种交通各跑一遍"每格 × 每建筑"的 distToRing，MF 一块 67944 格 × 16 栋 = 109 万次，
+  // 三遍就是 327 万次 —— 611 ms 里绝大部分在这里。现在只算一遍，后两种交通复用。
+  // 建筑包围盒：先用"到包围盒的距离"做廉价前置判断，远于净空要求就不必算真距离。
+  // 我们要的只是"是否 < clr"，不是精确值 —— 这一条把 MF 的 68k×16 次 distToRing
+  // 压到了只剩贴近建筑的少数格子。
+  const bboxes = c.buildings.map((b) => {
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (const q of b.footprint.outer) {
+      bx0 = Math.min(bx0, q.x); by0 = Math.min(by0, q.y);
+      bx1 = Math.max(bx1, q.x); by1 = Math.max(by1, q.y);
+    }
+    return { bx0, by0, bx1, by1, ring: b.footprint.outer };
+  });
+  const bboxDist = (x: number, y: number, b: (typeof bboxes)[number]) => {
+    const dx = Math.max(b.bx0 - x, 0, x - b.bx1);
+    const dy = Math.max(b.by0 - y, 0, y - b.by1);
+    return Math.hypot(dx, dy);
+  };
+  const field = new Float32Array(nx * ny);
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const x = x0 + (i + 0.5) * CELL;
+      const y = y0 + (j + 0.5) * CELL;
+      if (!inside(x, y)) { field[j * nx + i] = -1; continue; }
+      // 初值必须是**所有交通类型的最大净空之上**，不能是 clr * 3：
+      // 距离场会被其它交通类型复用，若按行人的 0.5 m 截断成 1.5 m，
+      // 车行（2.2 m）就会把整片地判成"太近"→ 全封（retail 就是这么崩的）。
+      let best = FIELD_CAP;
+      for (const b of bboxes) {
+        if (bboxDist(x, y, b) >= best) continue;
+        const d = distToRing(x, y, b.ring);
+        if (d < best) best = d;
+      }
+      field[j * nx + i] = best;
+    }
+  }
+  for (let k = 0; k < nx * ny; k++) {
+    if (field[k] < 0) { blocked[k] = 1; reason[k] = BLOCK_OUTSIDE_PARCEL; }
+    else if (field[k] < clr) { blocked[k] = 1; reason[k] = BLOCK_BUILDING; }
+  }
+  carveParking();
+  return { x0, y0, nx, ny, blocked, reason, inset: ctx.parcel, field };
 }
 
 function toCell(g: Grid, p: Pt): [number, number] {
@@ -267,7 +321,7 @@ const DX8 = [1, 1, 0, -1, -1, -1, 0, 1];
 const DY8 = [0, 1, 1, 1, 0, -1, -1, -1];
 
 /** A*（8 邻域）。`penalty` 让已用格子变贵，用来生成"不同的备选" */
-function astar(g: Grid, s: [number, number], t: [number, number], penalty?: Float32Array): Pt[] | null {
+function astar(g: Grid, s: [number, number], t: [number, number], penalty?: Float32Array, reuse?: Uint8Array): Pt[] | null {
   const { nx, ny } = g;
   const N = nx * ny;
   const open = new MinHeap();
@@ -297,7 +351,10 @@ function astar(g: Grid, s: [number, number], t: [number, number], penalty?: Floa
       if (DX[k] && DY[k]) {
         if (g.blocked[cj * nx + ni] || g.blocked[nj * nx + ci]) continue;
       }
-      const cost = D[k] + (penalty ? penalty[idx] : 0);
+      // 复用折扣：已经属于共享网络的格子便宜 45%，让后续路径主动并进去 ——
+      // 这是"共享骨架"的核心机制，不是事后数重叠。
+      const reuseHere = reuse && reuse[idx] ? 0.55 : 1;
+      const cost = (D[k] + (penalty ? penalty[idx] : 0)) * reuseHere;
       const ng = gScore[cur] + cost;
       if (ng < gScore[idx] - 1e-6) {
         gScore[idx] = ng;
@@ -480,7 +537,7 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
     nodes.push({ id: `park_${i}`, at: best, kind: 'parking', block: best, role: pr.role });
   }
   if (nodes.length < 2) {
-    return { nodes, edges, paths: [], stats: { solved: 0, totalM: 0, mainM: 0, subM: 0, paveM2: 0, sharedRate: 0, connected: true, ms: performance.now() - t0, cells: 0 }, warnings: ['入口不足，跳过'] };
+    return { nodes, edges, paths: [], stats: { solved: 0, totalM: 0, mainM: 0, subM: 0, paveM2: 0, sharedRate: 0, sharedM: 0, connected: true, ms: performance.now() - t0, cells: 0 }, warnings: ['入口不足，跳过'] };
   }
 
   // ② OD（有界：只连"街 → 要素"，不做全入口两两搜索）
@@ -506,11 +563,13 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
   const grids = new Map<Traffic, Grid>();
   for (const tr of ['pedestrian', 'vehicle', 'service'] as Traffic[]) {
     if (!ods.some((o) => o.traffic === tr)) continue;
-    const g = buildGrid(ctx, c, CLEAR[tr]);
+    const g = buildGrid(ctx, c, CLEAR[tr], [...grids.values()][0]?.field);
     grids.set(tr, g);
     cells += g.nx * g.ny;
     const use = new Map<number, number>();
     usage.set(tr, use);
+    /** 该交通类型已经铺过的格子（A* 的复用折扣用） */
+    const net = new Uint8Array(g.nx * g.ny);
     const comp = components(g);
     for (const od of ods.filter((o) => o.traffic === tr)) {
       // 街区口的方向 = 指向地块内部（access.normal 是朝外的，取反）
@@ -549,7 +608,7 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
       const sCell: [number, number] = [Math.floor((sa.to.x - g.x0) / CELL), Math.floor((sa.to.y - g.y0) / CELL)];
       const tCell: [number, number] = [Math.floor((sb.to.x - g.x0) / CELL), Math.floor((sb.to.y - g.y0) / CELL)];
       // 有界候选：先跑一次；若与已有路径重复 >80%，对已用格子加惩罚再跑一次
-      let best = astar(g, sCell, tCell);
+      let best = astar(g, sCell, tCell, undefined, net);
       if (!best) { warnings.push(`${od.a.id}→${od.b.id} 同分量但 A* 无解`); continue; }
       const replay = best.filter((p) => {
         const [i, j] = toCell(g, p);
@@ -558,13 +617,15 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
       if (replay > 0.8) {
         const pen = new Float32Array(g.nx * g.ny);
         for (const k of use.keys()) pen[k] = 6;
-        const alt = astar(g, sCell, tCell, pen);
+        const alt = astar(g, sCell, tCell, pen, net);
         if (alt && alt.length && lenM(alt) < lenM(best) * 1.6) best = alt;
       }
       for (const p of best) {
         const [i, j] = toCell(g, p);
         const k = j * g.nx + i;
         use.set(k, (use.get(k) ?? 0) + 1);
+        // 沿路径把中间格子也标进网络（路径点被 simplify 过，只标拐点会漏掉中间段）
+        if (net) net[k] = 1;
       }
       // **每个目标只保留一条**：出口候选只是为了"找到能通的那个"，不是四条都要建。
       // 之前把 4 次候选搜索全记成道路，retail 的路网从 65 m 涨到 845 m —— 全是重复。
@@ -616,6 +677,8 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
     }
   }
 
+  // 真实共享长度：每条边按"共享格子占比"折算，不再靠宽度倒推
+  const sharedM = kept.reduce((s, e) => s + e.lengthM * Math.max(0, Math.min(1, e.shared)), 0);
   const totalM = kept.reduce((s, e) => s + e.lengthM, 0);
   const mainM = kept.filter((e) => e.widthM >= 5).reduce((s, e) => s + e.lengthM, 0);
   const paveM2 = paths.reduce((s, p) => s + surfaceArea(p), 0) * 49;
@@ -631,7 +694,8 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
       mainM: +mainM.toFixed(1),
       subM: +(totalM - mainM).toFixed(1),
       paveM2: +paveM2.toFixed(0),
-      sharedRate: kept.length ? +(kept.filter((e) => e.widthM >= 5).length / kept.length).toFixed(2) : 0,
+      sharedRate: totalM > 0 ? +(sharedM / totalM).toFixed(2) : 0,
+      sharedM: +sharedM.toFixed(1),
       connected,
       ms: +(performance.now() - t0).toFixed(1),
       cells,
