@@ -76,6 +76,10 @@ export interface CirEdge {
   shared: number;
   /** ≥2 主路 5 m，否则次路 3 m */
   widthM: number;
+  /** 这条边承担的需求数（1 = 单入口接驳，≥2 = 共享主通道） */
+  odCount?: number;
+  /** 它并入网络的那个节点（汇合点） */
+  joinedAt?: { x: number; y: number };
 }
 
 export interface CirResult {
@@ -378,6 +382,87 @@ function astar(g: Grid, s: [number, number], t: [number, number], penalty?: Floa
   return simplify(out);
 }
 
+/**
+ * **多源 Dijkstra**：从网络上的所有格同时出发，返回"目标接入网络"的那条路径。
+ *
+ * 这是 R1.2-B 的核心：入口不再各自回街区出口，而是接到**最近的网络节点**。
+ * 一次搜索代替"每目标 × 每出口一次 A*"。
+ * 只允许同类交通的网络格子作为源（不把步行/货运混成一个终点集）。
+ */
+function multiSourceDijkstra(
+  g: Grid,
+  net: Uint8Array,
+  comp: Int32Array,
+  target: number
+): { path: Pt[] | null; joinAt: Pt | null; fromId: string | null; steps: number; expanded: number; sourceCount: number } {
+  const { nx, ny } = g;
+  const N = nx * ny;
+  const dist = new Float32Array(N).fill(Infinity);
+  const came = new Int32Array(N).fill(-1);
+  const heap = new MinHeap();
+  let sourceCount = 0;
+  // 目标所在分量里、且属于网络的格子作为源 —— 不同分量之间本来就不该连
+  for (let k = 0; k < N; k++) {
+    if (!net[k] || g.blocked[k]) continue;
+    if (comp[k] !== comp[target]) continue;
+    dist[k] = 0;
+    heap.push(k, 0);
+    sourceCount++;
+  }
+  if (sourceCount === 0) return { path: null, joinAt: null, fromId: null, steps: 0, expanded: 0, sourceCount: 0 };
+
+  let expanded = 0;
+  while (heap.size) {
+    const cur = heap.pop();
+    if (dist[cur] === Infinity) continue;
+    expanded++;
+    if (cur === target) break;
+    const ci = cur % nx;
+    const cj = (cur - ci) / nx;
+    for (let k = 0; k < 8; k++) {
+      const ni = ci + DX8[k];
+      const nj = cj + DY8[k];
+      if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) continue;
+      const idx = nj * nx + ni;
+      if (g.blocked[idx]) continue;
+      if (DX8[k] && DY8[k]) {
+        if (g.blocked[cj * nx + ni] || g.blocked[nj * nx + ci]) continue;
+      }
+      const w = DX8[k] && DY8[k] ? 1.414 : 1;
+      const nd = dist[cur] + w;
+      if (nd < dist[idx] - 1e-6) {
+        dist[idx] = nd;
+        came[idx] = cur;
+        heap.push(idx, nd);
+      }
+    }
+  }
+  if (came[target] === -1 && dist[target] > 1e-6) {
+    return { path: null, joinAt: null, fromId: null, steps: 0, expanded, sourceCount };
+  }
+  const out: Pt[] = [];
+  let cur = target;
+  let guard = 0;
+  let steps = 0;
+  while (cur !== -1 && guard++ < 40000) {
+    const ci = cur % nx;
+    const cj = (cur - ci) / nx;
+    out.push(cellCenter(g, ci, cj));
+    steps++;
+    if (dist[cur] === 0) break; // 到达源
+    cur = came[cur];
+  }
+  out.reverse();
+  return {
+    path: out.length >= 2 ? simplify(out) : null,
+    joinAt: out[0] ?? null,
+    fromId: 'net',
+    steps,
+    expanded,
+    sourceCount,
+  };
+}
+
 function h(i: number, j: number, ti: number, tj: number): number {
   const dx = Math.abs(i - ti);
   const dy = Math.abs(j - tj);
@@ -557,105 +642,109 @@ export function solveCirculation(ctx: SiteContext, c: SitePlanCandidate): CirRes
     for (const s of near) ods.push({ a: s, b: t, traffic });
   }
 
-  // ③~⑤ 逐个交通类型建栅格 → A* → 记账
-  const usage = new Map<Traffic, Map<number, number>>();
+  // ③~⑥ 增量网络生长（多源 Dijkstra）
+  //
+  // 与上一版的根本区别：**不再让每条 OD 各自回到街区出口**。
+  // 网络从"合法街区出口"起步，之后每个入口只要连到**已有网络上的任意节点**即可 ——
+  // 这条路径才叫共享骨架；上一版只是把几条独立 A* 画在同一张图上（retail 的右图
+  // 明显是两段互不相连的子网）。
+  //
+  // 顺带解决性能：每个入口**一次**多源 Dijkstra，而不是"每个目标 × 4 个出口各一次 A*"。
+  const tGrid = performance.now();
   let cells = 0;
-  const grids = new Map<Traffic, Grid>();
+  const grids = new Map<Traffic, { g: Grid; comp: Int32Array; net: Uint8Array; odCount: Int32Array }>();
   for (const tr of ['pedestrian', 'vehicle', 'service'] as Traffic[]) {
-    if (!ods.some((o) => o.traffic === tr)) continue;
-    const g = buildGrid(ctx, c, CLEAR[tr], [...grids.values()][0]?.field);
-    grids.set(tr, g);
+    const g = buildGrid(ctx, c, CLEAR[tr]);
+    grids.set(tr, { g, comp: components(g), net: new Uint8Array(g.nx * g.ny), odCount: new Int32Array(g.nx * g.ny) });
     cells += g.nx * g.ny;
-    const use = new Map<number, number>();
-    usage.set(tr, use);
-    /** 该交通类型已经铺过的格子（A* 的复用折扣用） */
-    const net = new Uint8Array(g.nx * g.ny);
-    const comp = components(g);
-    for (const od of ods.filter((o) => o.traffic === tr)) {
-      // 街区口的方向 = 指向地块内部（access.normal 是朝外的，取反）
-      const dirA = nodeDir.get(od.a.id) ?? undefined;
-      const sa = snapWithReason(g, od.a.block, 40, dirA);
-      // 停车/门的兜底方向：朝最近街道口
-      const toward = new Pt(od.a.block.x - od.b.block.x, od.a.block.y - od.b.block.y);
-      const tl = Math.hypot(toward.x, toward.y) || 1;
-      // 方向按 Portal 语义分开，不用"全局反向"这一条规则：
-      //   · 街区出口：朝地块内部（栅格在 parcel 内，出口在 parcel 边上）
-      //   · 建筑门 / 后勤口 / 停车口：朝**场地内部**（离开建筑膨胀区，进入可通行区）
-      // 拿"朝街道"去推门和后勤口，方向是反的 —— retail 的 svc 就是这么 outside-grid 的。
-      const centroid = ctx.parcel.outer.reduce((a, q) => new Pt(a.x + q.x / ctx.parcel.outer.length, a.y + q.y / ctx.parcel.outer.length), new Pt(0, 0));
-      const inw = new Pt(centroid.x - od.b.block.x, centroid.y - od.b.block.y);
-      const il = Math.hypot(inw.x, inw.y) || 1;
-      const dirB = od.b.kind === 'parking' || od.b.kind === 'door' || od.b.kind === 'service-door'
-        ? (od.b.kind === 'parking' ? new Pt(toward.x / tl, toward.y / tl) : new Pt(inw.x / il, inw.y / il))
-        : undefined;
-      const sb = snapWithReason(g, od.b.block, 40, dirB);
-      sa.component = sa.to ? comp[idxOf(g, sa.to)] : -1;
-      sb.component = sb.to ? comp[idxOf(g, sb.to)] : -1;
-      if (!sa.to || !sb.to) {
-        warnings.push(
-          `${od.a.id}→${od.b.id} 吸附失败（${od.a.id}:${sa.reason ?? 'ok'} / ${od.b.id}:${sb.reason ?? 'ok'}）`
-        );
-        continue;
-      }
-      if (sa.component !== sb.component) {
-        // **这是关键诊断**：两个点都可走，但分属不同连通分量 —— 起点被建筑围住了。
-        warnings.push(
-          `${od.a.id}→${od.b.id} 分量不连通（${sa.component} vs ${sb.component}），` +
-          `${od.a.id} 吸附 ${sa.distM.toFixed(1)}m / ${od.b.id} 吸附 ${sb.distM.toFixed(1)}m`
-        );
-        continue;
-      }
-      const sCell: [number, number] = [Math.floor((sa.to.x - g.x0) / CELL), Math.floor((sa.to.y - g.y0) / CELL)];
-      const tCell: [number, number] = [Math.floor((sb.to.x - g.x0) / CELL), Math.floor((sb.to.y - g.y0) / CELL)];
-      // 有界候选：先跑一次；若与已有路径重复 >80%，对已用格子加惩罚再跑一次
-      let best = astar(g, sCell, tCell, undefined, net);
-      if (!best) { warnings.push(`${od.a.id}→${od.b.id} 同分量但 A* 无解`); continue; }
-      const replay = best.filter((p) => {
-        const [i, j] = toCell(g, p);
-        return use.has(j * g.nx + i);
-      }).length / Math.max(best.length, 1);
-      if (replay > 0.8) {
-        const pen = new Float32Array(g.nx * g.ny);
-        for (const k of use.keys()) pen[k] = 6;
-        const alt = astar(g, sCell, tCell, pen, net);
-        if (alt && alt.length && lenM(alt) < lenM(best) * 1.6) best = alt;
-      }
-      for (const p of best) {
-        const [i, j] = toCell(g, p);
-        const k = j * g.nx + i;
-        use.set(k, (use.get(k) ?? 0) + 1);
-        // 沿路径把中间格子也标进网络（路径点被 simplify 过，只标拐点会漏掉中间段）
-        if (net) net[k] = 1;
-      }
-      // **每个目标只保留一条**：出口候选只是为了"找到能通的那个"，不是四条都要建。
-      // 之前把 4 次候选搜索全记成道路，retail 的路网从 65 m 涨到 845 m —— 全是重复。
-      const cand: CirEdge = {
-        from: od.a.id,
-        to: od.b.id,
-        traffic: od.traffic,
-        pts: best,
-        lengthM: +lenM(best).toFixed(1),
-        shared: 1,
-        widthM: od.traffic === 'pedestrian' ? 3 : 5,
-      };
-      const prev = edges.find((e) => e.to === od.b.id);
-      if (!prev) edges.push(cand);
-      else if (cand.lengthM < prev.lengthM) edges[edges.indexOf(prev)] = cand;
+  }
+  const tGridDone = performance.now();
+
+  /** 入口 → 该用哪种交通网络 */
+  const trafficOf = (kind: CirNode['kind']): Traffic =>
+    kind === 'parking' ? 'vehicle' : kind === 'service-door' ? 'service' : 'pedestrian';
+
+  /** 网络种子：合法街区出口。**每种交通各自种一遍** —— 步行、车行、货运是三个独立网络，
+   *  上一版只种了 pedestrian，导致 vehicle/service 网络规模为 0，所有停车/后勤 OD 全部无解。 */
+  for (const tr of ['pedestrian', 'vehicle', 'service'] as Traffic[]) {
+    const gr = grids.get(tr);
+    if (!gr) continue;
+    for (const n of nodes.filter((x) => x.kind === 'street')) {
+      const sn = snapWithReason(gr.g, n.block, 40, nodeDir.get(n.id));
+      if (!sn.to) continue;
+      const k = idxOf(gr.g, sn.to);
+      if (!gr.g.blocked[k]) gr.net[k] = 1;
     }
   }
 
-  // ⑥ 共享判定 + 剪枝（<8 m 且不接任何别的路的毛刺）
-  for (const e of edges) {
-    const g = grids.get(e.traffic);
-    const use = usage.get(e.traffic);
-    if (!g || !use) continue;
-    let sharedCells = 0;
-    for (const p of e.pts) {
-      const [i, j] = toCell(g, p);
-      if ((use.get(j * g.nx + i) ?? 0) >= 2) sharedCells++;
+  let searches = 0;
+  let expanded = 0;
+  const tAstar = { v: 0 };
+  const order = ['street', 'door', 'parking', 'service-door'] as const;
+  for (const kind of order) {
+    if (kind === 'street') continue;
+    for (const t of nodes.filter((x) => x.kind === kind)) {
+      const tr = trafficOf(kind);
+      const gr = grids.get(tr);
+      if (!gr) continue;
+      const { g, comp, net, odCount } = gr;
+      const target = snapWithReason(g, t.block, 40, t.at);
+      if (!target.to) { warnings.push(`${t.id} 吸附失败（${target.reason}）`); continue; }
+      const tk = idxOf(g, target.to);
+      if (g.blocked[tk]) { warnings.push(`${t.id} 落在障碍格里`); continue; }
+
+      const t0 = performance.now();
+      const res = multiSourceDijkstra(g, net, comp, tk);
+      tAstar.v += performance.now() - t0;
+      searches++;
+      expanded += res.expanded;
+
+      if (!res.path) {
+        warnings.push(
+          `${t.id} 无法接入 ${tr} 网络（目标分量 ${comp[tk]}，网络规模 ${res.sourceCount}，` +
+          `扩展到 ${res.expanded} 格）`
+        );
+        continue;
+      }
+      // 网络增量：把这条路径并入网络，并累加每格承担的 OD
+      for (const q of res.path) {
+        const k = idxOf(g, q);
+        net[k] = 1;
+        odCount[k]++;
+      }
+      edges.push({
+        from: res.fromId ?? `net_${res.steps}`,
+        to: t.id,
+        traffic: tr,
+        pts: res.path,
+        lengthM: +lenM(res.path).toFixed(1),
+        shared: 1,
+        widthM: kind === 'door' ? 3 : 5,
+        odCount: 1,
+        joinedAt: res.joinAt ? { x: res.joinAt.x, y: res.joinAt.y } : undefined,
+      });
+      // 停车/后勤入口第一次接入后，把它自己也算进网络（后续同类型入口可以共用）
+      net[tk] = 1;
     }
+  }
+  const tGrow = performance.now();
+
+
+  // ⑥ 共享判定：**按每格实际承担的 OD 数**，不是按宽度倒推
+  for (const e of edges) {
+    const gr = grids.get(e.traffic);
+    if (!gr) continue;
+    let sharedCells = 0;
+    let maxOd = 1;
+    for (const p of e.pts) {
+      const k = idxOf(gr.g, p);
+      const c = gr.odCount[k];
+      if (c >= 2) sharedCells++;
+      maxOd = Math.max(maxOd, c);
+    }
+    e.odCount = maxOd;
     e.shared = Math.round((sharedCells / Math.max(e.pts.length, 1)) * 10) / 10;
-    e.widthM = e.shared >= 0.5 ? 5 : 3;
+    e.widthM = maxOd >= 2 ? 5 : 3;
   }
   // 剪枝**不能剪掉某个目标的唯一连接** —— 一条 6 m 的短接驳如果它是进门的唯一一条，
   // 剪了就等于"入口连通"，但实际没路。原来 retail 就是这么从 ✓ 变 ✗ 的。
